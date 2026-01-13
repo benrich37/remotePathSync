@@ -86,22 +86,20 @@ class PathRoot:
     scp: SCPClient | None = None
     hostname: str | None = None
 
-    def __init__(self, root: Path, hostname: str | None, try_agent=True, _ssh=None, username: str | None = None, keepalive_interval: int | None = 60):
+    def __init__(self, root: Path, hostname: str | None, try_agent=True, _ssh=None, username: str | None = None, keepalive_interval: int | None = 60, port: int = 22):
         self.root = root
-        port = 22
-        if username is None:
-            raise ValueError("username must be provided")
-        user = username
         ssh = _ssh
         scp = None
         if not hostname is None:
             self.remote = True
+            if username is None:
+                raise ValueError("username must be provided for remote PathRoot")
             if _ssh is None:
                 if try_agent:
-                    ssh = createSSHClient_through_agent(hostname, user)
+                    ssh = createSSHClient_through_agent(hostname, username)
                 if ssh is None:
                     sdfsdfsdf = get_pw_and_otp_combo()
-                    ssh = createSSHClient(hostname, port, user, fernet.decrypt(sdfsdfsdf).decode())
+                    ssh = createSSHClient(hostname, port, username, fernet.decrypt(sdfsdfsdf).decode())
                     del sdfsdfsdf
             scp = SCPClient(ssh.get_transport())
             self.hostname = hostname

@@ -6,4 +6,5 @@ authors = [{ name = "Ben Rich", email = "benjamin.rich@colorado.edu" }]
 
 dependencies = [
     "paramiko", # I believe this installs scp with it
+    "ipykernel",
 ]

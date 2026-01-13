@@ -14,6 +14,8 @@ class PathRootPair:
     remote: PathRoot
     job_cache: dict[str, dict] = {}
     job_cache_refresh_time: float = 60
+    hostname: str | None = None
+    username: str | None = None
     hostnames: dict[str, str] | None = None
     usernames: dict[str, str] | None = None
 
@@ -23,15 +25,38 @@ class PathRootPair:
 
     @classmethod
     def from_paths(
-        cls, local: Path, remote: Path, try_agent=True, 
-        hostname: str | None = None, cluster: str | None = None, username: str | None = None,
+        cls, 
+        cluster: str | None = None,
+        local_root: Path | None = None, 
+        local_roots: dict[str, str | Path] | None = None,
+        remote_root: Path | None = None, 
+        remote_roots: dict[str, str | Path] | None = None,
+        hostname: str | None = None, 
         hostnames: dict[str, str] | None = None,
+        username: str | None = None,
         usernames: dict[str, str] | None = None,
         keepalive_interval: int | None = 60, 
+        try_agent=True, 
         ):
-        local = PathRoot(local, None)
-        if (hostnames is None) and (not cls.hostnames is None):
-            hostnames = cls.hostnames
+        # TODO: Refactor to reduce redundancy with all this checking
+        if (local_roots is None) and (not cls.local_roots is None):
+            local_roots = cls.local_roots
+        if local_root is None:
+            if not cluster is None:
+                assert cluster in local_roots, f"Cluster {cluster} not found in local_roots dictionary ({local_roots})"
+                local_root = Path(local_roots[cluster])
+            else:
+                raise ValueError("local_root must be provided either directly or through local_roots dictionary and cluster name")
+        if (remote_roots is None) and (not cls.remote_roots is None):
+            remote_roots = cls.remote_roots
+        if remote_root is None:
+            if not cluster is None:
+                assert cluster in remote_roots, f"Cluster {cluster} not found in remote_roots dictionary ({remote_roots})"
+                remote_root = Path(remote_roots[cluster])
+            else:
+                raise ValueError("remote_root must be provided either directly or through remote_roots dictionary and cluster name")
+        if username is None and (not cls.username is None):
+            username = cls.username
         if (usernames is None) and (not cls.usernames is None):
             usernames = cls.usernames
         if (username is None) and (not usernames is None):
@@ -40,14 +65,19 @@ class PathRootPair:
                 username = usernames[cluster]
             else:
                 raise ValueError("username must be provided either directly or through usernames dictionary and cluster name")
+        if hostname is None and (not cls.hostname is None):
+            hostname = cls.hostname
+        if (hostnames is None) and (not cls.hostnames is None):
+            hostnames = cls.hostnames
         if (hostname is None) and (not hostnames is None):
             if not cluster is None:
                 assert cluster in hostnames, f"Cluster {cluster} not found in hostnames dictionary ({usernames})"
                 hostname = hostnames[cluster]
             else:
                 raise ValueError("hostname must be provided either directly or through hostnames dictionary and cluster name")
-        print(f"Connecting to {hostname}")
-        remote = PathRoot(remote, hostname, try_agent, username=username)
+        print(f"Connecting to {hostname} (user: {username}, remote root: {remote_root}, local root: {local_root})")
+        local = PathRoot(local_root, None)
+        remote = PathRoot(remote_root, hostname, try_agent, username=username)
         instance = cls(local, remote)
         if not keepalive_interval is None:
             instance.set_keepalive(keepalive_interval)
