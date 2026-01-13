@@ -414,6 +414,7 @@ class PathRootPair:
 
 
 
+# TODO: Refactor this as an inheritor of PathRootPair but with remote-exclusive functions overwritten
 class LocalPathRootPair:
     local1: PathRoot
     local2: PathRoot
