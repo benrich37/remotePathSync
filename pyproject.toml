@@ -9,4 +9,5 @@ dependencies = [
     "ase>=3.23.0",
     "pymatgen@git+https://github.com/benrich37/pymatgen.git",
     "ipykernel",
+    "paramiko", # I believe this installs scp with it
 ]
