@@ -25,6 +25,7 @@ class PathRootPair:
     # Figure out how to make this customizable
     submit_command_template: str = "cd {path}; sbatch {slurm_file_name}"
     slurm_file_name: str = "psubmit.sh"
+    exclude_fs_default = ["wfns", "n_up", "n_dn", "fluidState", "out_wforce.logx", "force"]
 
 
     def __init__(self, local: PathRoot, remote: PathRoot):
@@ -148,8 +149,10 @@ class PathRootPair:
 
 
     def download_dir(self, arb_path: Path, p: bool = True, as_zip: bool = True,
-                     exclude_fs=["wfns", "n_up", "n_dn", "fluidState", "out_wforce.logx", "force"],
+                     exclude_fs: list[str] | None = None,
                      include_fs=None, update_existing=True):
+        if exclude_fs is None:
+            exclude_fs = self.exclude_fs_default
         if not as_zip:
             self.update_dir_contents(
                 Path(arb_path),
@@ -160,8 +163,10 @@ class PathRootPair:
             
 
     def upload_dir(self, arb_path: Path, p: bool = True, as_zip: bool = True,
-                     exclude_fs=["wfns", "n_up", "n_dn", "fluidState", "out_wforce.logx", "force"],
+                     exclude_fs: list[str] | None = None,
                      include_fs=None, update_existing=True):
+        if exclude_fs is None:
+            exclude_fs = self.exclude_fs_default
         if not as_zip:
             self.upload_recursive(
                 Path(arb_path),
@@ -203,11 +208,14 @@ class PathRootPair:
 
     def update_dir_contents(
             self, arb_dir: Path, 
-            exclude_fs=["wfns", "n_up", "n_dn", "fluidState", "out_wforce.logx", "force"], p=True, 
+            exclude_fs: list[str] | None = None,
+            p=True, 
             include_fs=None,
             recursive=True,
             force_download=False,
             ):
+        if exclude_fs is None:
+            exclude_fs = self.exclude_fs_default
         local_dir, remote_dir = self.get_local_remote_from_arb(arb_dir)
         local_dir.mkdir(parents=True, exist_ok=True)
         remote_files = self.remote.get_ls_l_file_info(remote_dir)
@@ -471,12 +479,15 @@ class LocalPathRootPair:
 
     def sync_dir_contents(
             self, local1_dir, local2_dir = None,
-            exclude_fs=["wfns", "n_up", "n_dn", "fluidState", "out_wforce.logx", "force"], p=True, 
+            exclude_fs: list[str] | None = None,
+            p=True, 
             exclude_dirs=None,
             include_fs=None,
             recursive=True,
             force_download=False,
             ):
+        if exclude_fs is None:
+            exclude_fs = []
         if local2_dir is None:
             local2_dir = self.get_local2_path(local1_dir)
         self.update_dir_contents(local1_dir, local2_dir=local2_dir, exclude_fs=exclude_fs, include_fs=include_fs, recursive=recursive, force_download=force_download, p=p, exclude_dirs=exclude_dirs)
@@ -486,13 +497,16 @@ class LocalPathRootPair:
 
     def update_dir_contents_helper(
             self, local1_dir: str, local2_dir: str, local1_ls_l: str, local2_ls_l:str,
-            exclude_fs=["wfns", "n_up", "n_dn", "fluidState", "out_wforce.logx", "force"], p=True, 
+            exclude_fs: list[str] | None = None,
+            p=True, 
             exclude_dirs=None,
             include_fs=None,
             recursive=True,
             force_download=False,
             reverse=False,
             ):
+        if exclude_fs is None:
+            exclude_fs = []
         if exclude_dirs is None:
             exclude_dirs = []
         local1_files = list(local1_ls_l.keys())
@@ -557,13 +571,16 @@ class LocalPathRootPair:
 
     def update_dir_contents(
             self, local1_dir, local2_dir = None,
-            exclude_fs=["wfns", "n_up", "n_dn", "fluidState", "out_wforce.logx", "force"], p=True, 
+            exclude_fs: list[str] | None = None,
+            p=True, 
             exclude_dirs=None,
             include_fs=None,
             recursive=True,
             force_download=False,
             reverse=False,
             ):
+        if exclude_fs is None:
+            exclude_fs = []
         if exclude_dirs is None:
             exclude_dirs = []
         if not reverse:
