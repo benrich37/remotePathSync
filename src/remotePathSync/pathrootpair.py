@@ -22,6 +22,10 @@ class PathRootPair:
     username: str | None = None
     hostnames: dict[str, str] | None = None
     usernames: dict[str, str] | None = None
+    # Figure out how to make this customizable
+    submit_command_template: str = "cd {path}; sbatch {slurm_file_name}"
+    slurm_file_name: str = "psubmit.sh"
+
 
     def __init__(self, local: PathRoot, remote: PathRoot):
         self.local = local
@@ -169,7 +173,9 @@ class PathRootPair:
 
     def upload(self, arb_file_path: Path | str, p=True):
         local_file, remote_file = self.get_local_remote_from_arb(Path(arb_file_path))
+        msg = self.remote.mkdir(remote_file.parent)
         if p:
+            print(msg)
             print(f"{local_file} --> {remote_file}")
         self.remote.scp.put(str(local_file), str(remote_file.parent))
 
@@ -388,9 +394,11 @@ class PathRootPair:
         self.submit_path_psubmit(remote_path)
 
 
-    def submit_path_psubmit(self, path: Path, slurm_file="psubmit.sh"):
+    def submit_path_psubmit(self, path: Path, slurm_file_name: str | None = None):
         path = str(self.get_local_remote_from_arb(path)[1])
-        print(self.remote.run(f"cd {path}; sbatch {slurm_file}"))
+        if slurm_file_name is None:
+            slurm_file_name = self.slurm_file_name
+        print(self.remote.run(self.submit_command_template.format(path=path, slurm_file_name=slurm_file_name)))
 
     def cancel_jobid(self, jobid):
         print(self.remote.run(f"scancel {jobid}"))
