@@ -9,10 +9,6 @@ from shutil import copy2 as cp
 from remotePathSync.pathroot import PathRoot
 
 
-
-
-        
-
 class PathRootPair:
     local: PathRoot
     remote: PathRoot
