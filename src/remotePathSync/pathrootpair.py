@@ -14,20 +14,40 @@ class PathRootPair:
     remote: PathRoot
     job_cache: dict[str, dict] = {}
     job_cache_refresh_time: float = 60
+    hostnames: dict[str, str] | None = None
+    usernames: dict[str, str] | None = None
 
     def __init__(self, local: PathRoot, remote: PathRoot):
         self.local = local
         self.remote = remote
 
     @classmethod
-    def from_paths(cls, local: Path, remote: Path, try_agent=True, hostname=None, cluster=None, keepalive_interval: int | None = 60, hostnames: dict[str, str] | None = None):
+    def from_paths(
+        cls, local: Path, remote: Path, try_agent=True, 
+        hostname: str | None = None, cluster: str | None = None, username: str | None = None,
+        hostnames: dict[str, str] | None = None,
+        usernames: dict[str, str] | None = None,
+        keepalive_interval: int | None = 60, 
+        ):
         local = PathRoot(local, None)
-        if (hostname is None) and (not cluster is None):
-            if hostnames is None:
-                raise ValueError("hostnames dictionary must be provided when using cluster name")
-            hostname = hostnames[cluster]
+        if (hostnames is None) and (not cls.hostnames is None):
+            hostnames = cls.hostnames
+        if (usernames is None) and (not cls.usernames is None):
+            usernames = cls.usernames
+        if (username is None) and (not usernames is None):
+            if not cluster is None:
+                assert cluster in usernames, f"Cluster {cluster} not found in usernames dictionary ({usernames})"
+                username = usernames[cluster]
+            else:
+                raise ValueError("username must be provided either directly or through usernames dictionary and cluster name")
+        if (hostname is None) and (not hostnames is None):
+            if not cluster is None:
+                assert cluster in hostnames, f"Cluster {cluster} not found in hostnames dictionary ({usernames})"
+                hostname = hostnames[cluster]
+            else:
+                raise ValueError("hostname must be provided either directly or through hostnames dictionary and cluster name")
         print(f"Connecting to {hostname}")
-        remote = PathRoot(remote, hostname, try_agent)
+        remote = PathRoot(remote, hostname, try_agent, username=username)
         instance = cls(local, remote)
         if not keepalive_interval is None:
             instance.set_keepalive(keepalive_interval)
