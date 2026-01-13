@@ -11,7 +11,11 @@ from remotePathSync.pathroot import PathRoot
 
 class PathRootPair:
     local: PathRoot
+    local_root: Path | str | None = None
+    local_roots: dict[str, str | Path] | None = None
     remote: PathRoot
+    remote_root: Path | str | None = None
+    remote_roots: dict[str, str | Path] | None = None
     job_cache: dict[str, dict] = {}
     job_cache_refresh_time: float = 60
     hostname: str | None = None
