@@ -101,15 +101,16 @@ class PathRootPair:
         """ Set keepalive interval for remote SSH connection """
         self.remote.set_keepalive(interval)
     
-    def get_local_path(self, remote_path: Path):
+    def get_local_path(self, remote_path: Path | str):
         """ Get local path from remote path (<remote_root>/<path tree> -> <local_root>/<path tree>) """
-        return self.local.root / remote_path.relative_to(self.remote.root)
+        return self.local.root / Path(remote_path).relative_to(self.remote.root)
     
-    def get_remote_path(self, local_path: str):
+    def get_remote_path(self, local_path: Path | str):
         """ Get remote path from local path (<local_root>/<path tree> -> <remote_root>/<path tree>) """
-        return self.remote.root / local_path.relative_to(self.local.root)
+        return self.remote.root / Path(local_path).relative_to(self.local.root)
         
-    def get_local_remote_from_arb(self, arb_path: Path):
+    def get_local_remote_from_arb(self, arb_path: Path | str):
+        arb_path = Path(arb_path)
         if arb_path.is_relative_to(self.local.root):
             local_path = arb_path
             remote_path = self.get_remote_path(arb_path)
