@@ -245,27 +245,6 @@ class PathRoot:
                     raise e
                 file_info[f]["time"] = timeo
         return file_info
-    
-    # def ope(self, path: Path):
-    #     from time import time
-    #     if self.remote:
-    #         t0 = time()
-    #         out = self.ssh.exec_command(f"[ -e {str(path)} ] || echo 'yes'")
-    #         # line = out[2].read().decode().strip().split(":")[-1]
-    #         t1 = time()
-    #         out2 = out[2].read()
-    #         t2 = time()
-    #         out2_decoded = out2.decode()
-    #         t3 = time()
-    #         line = out2_decoded.strip().split(":")[-1]
-    #         t4 = time()
-    #         # print(f"Time to execute remote command: {t1 - t0:.2f} seconds")
-    #         # print(f"Time to read remote command output: {t2 - t1:.2f} seconds")
-    #         # print(f"Time to decode remote command output: {t3 - t2:.2f} seconds")
-    #         # print(f"Time to parse remote command output: {t4 - t3:.2f} seconds")
-    #         return not "yes" in line
-    #     else:
-    #         return ope(path)
 
     def ope(self, path: Path):
         """ Fast remote existence check using SFTP stat instead of shell output. """
@@ -293,14 +272,6 @@ class PathRoot:
         else:
             return path.is_dir()
         
-    # def isdir(self, path: Path):
-    #     if self.remote:
-    #         out = self.ssh.exec_command(f"[ -d {str(path)} ] || echo 'yes'")
-    #         line = out[2].read().decode().strip().split(":")[-1]
-    #         return "yes" in line
-    #     else:
-    #         return path.is_dir()
-        
     def rm(self, path: Path):
         if not path.is_relative_to(self.root):
             raise ValueError(f"Path {path} does not contain root {self.root}")
@@ -314,9 +285,6 @@ class PathRoot:
             else:
                 self._get_sftp().remove(str(path))
             return None
-            # cmd = "rm -r " if self.isdir(path) else "rm "
-            # cmd += str(path)
-            # return self.run(cmd)
         
     def mkdir(self, path: Path, parents=True, exist_ok=True):
         if not path.is_relative_to(self.root):
@@ -325,18 +293,6 @@ class PathRoot:
             return path.mkdir(parents=True, exist_ok=True)
         else:
             self._get_sftp().mkdir(str(path), parents=parents, exist_ok=exist_ok)
-            # out = self.ssh.exec_command(f"mkdir -p {path}")
-            # return out[2].read().decode().strip()
-        
-    # def pcat(self, root, fs, force=False):
-    #     path = root
-    #     for f in fs:
-    #         path = opj(path, f)
-    #         if force:
-    #             if not self.ope(path):
-    #                 print(f"making {path}")
-    #                 self.mkdir(path)
-    #     return path
     
     def listdirs(self, path):
         if self.remote:
