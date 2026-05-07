@@ -365,13 +365,14 @@ class PathRootPair:
         return self.job_cache[str(days)]["slurm_jobs"]
     
     def get_job_state(self, path: Path, check_days=3) -> str | None:
-        """ Get the slurm STATE of a job associated with a local or remote path """
-        path = str(self.get_local_remote_from_arb(path)[1])
-        slurm_jobs = self.get_slurm_jobs(days=check_days)
-        curstate = None
-        if path in slurm_jobs:
-            curstate = slurm_jobs[path]["state"]
-        return curstate
+        # """ Get the slurm STATE of a job associated with a local or remote path """
+        # path = str(self.get_local_remote_from_arb(path)[1])
+        # slurm_jobs = self.get_slurm_jobs(days=check_days)
+        # curstate = None
+        # if path in slurm_jobs:
+        #     curstate = slurm_jobs[path]["state"]
+        # return curstate
+        return self.get_job_states(path, check_days=check_days)[-1]
     
     def get_job_states(self, path: Path, check_days=3) -> str | None:
         """ Get the slurm STATE of a job associated with a local or remote path """
@@ -443,9 +444,6 @@ class PathRootPair:
 
     def cancel_jobid(self, jobid):
         print(self.remote.run(f"scancel {jobid}"))
-
-
-
 
 # TODO: Refactor this as an inheritor of PathRootPair but with remote-exclusive functions overwritten
 # WARNING: I have not needed this class in a long time so it may not be functional/compatible with the rest of this package anymore.
