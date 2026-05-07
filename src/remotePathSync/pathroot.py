@@ -7,11 +7,28 @@ from datetime import datetime
 import getpass
 from cryptography.fernet import Fernet
 import os
+import errno
+import stat
 from pathlib import Path
 import shutil
 
 key = Fernet.generate_key()
 fernet = Fernet(key)
+
+
+def get_common_path_multi(directory_paths: list[Path]):
+    sample_path = directory_paths[0]
+    common_path = sample_path
+    for path in directory_paths:
+        common_path = get_common_path(path, common_path)
+    return common_path
+
+
+def get_common_path(path1: Path, path2: Path):
+    other = path1.with_segments(path2)
+    for step, path in enumerate([other] + list(other.parents)):
+        if path1.is_relative_to(path):
+            return path
 
 def createSSHClient(server, port, user, password):
     client = paramiko.SSHClient()
@@ -84,12 +101,14 @@ class PathRoot:
     root: Path | None = None
     ssh: paramiko.SSHClient | None = None
     scp: SCPClient | None = None
+    sftp: paramiko.SFTPClient | None = None
     hostname: str | None = None
 
     def __init__(self, root: Path, hostname: str | None, try_agent=True, _ssh=None, username: str | None = None, keepalive_interval: int | None = 60, port: int = 22):
         self.root = root
         ssh = _ssh
         scp = None
+        self.sftp = None
         if not hostname is None:
             self.remote = True
             if username is None:
@@ -122,12 +141,12 @@ class PathRoot:
         instance = cls(root, hostname, _ssh = pathroot.ssh)
         return instance
 
-    def _run(self, cmd):
-        if self.remote:
-            out = self.ssh.exec_command(cmd)
-            return out[1].read().decode()
-        else:
-            return os.popen(cmd).read()
+    def _get_sftp(self) -> paramiko.SFTPClient:
+        if not self.remote:
+            raise ValueError("SFTP is only available for remote PathRoot instances")
+        if self.sftp is None:
+            self.sftp = self.ssh.open_sftp()
+        return self.sftp
 
     def run(self, cmd):
         if self.remote:
@@ -136,7 +155,7 @@ class PathRoot:
         else:
             return os.popen(cmd).read()
         
-    def make_zip(self, arb_dir_path: Path, exclude_fs=["wfns"], include_fs=None) -> Path:
+    def make_zip(self, arb_dir_path: Path, exclude_fs: list[str] | None = None, include_fs=None) -> Path:
         zip_path = arb_dir_path.parent / f"{str(arb_dir_path.name)}.zip"
         cmd = f"cd {str(arb_dir_path.parent)}; zip -r {str(arb_dir_path.name)}.zip {str(arb_dir_path.name)}"
         app_files = None
@@ -151,6 +170,24 @@ class PathRoot:
                 cmd += f" '*/{f}'"
         self.run(cmd)
         return zip_path
+    
+    def make_zip_multi(self, directory_paths: list[Path], exclude_fs: list[str] | None = None, zip_name = "archive.zip", pref_common_path: Path | None = None) -> Path:
+        common_path = get_common_path_multi(directory_paths)
+        if not pref_common_path is None:
+            if not common_path.is_relative_to(pref_common_path):
+                raise ValueError(f"Provided pref_common_path ({pref_common_path}) is not relative to minimal common path of provided directories ({common_path})")
+            else:
+                common_path = pref_common_path
+        rel_dirs = [d.relative_to(common_path) for d in directory_paths]
+        cmd = f"cd {common_path}; zip -r {zip_name} . -i"
+        for reld in rel_dirs:
+            cmd += f" '{reld / "*"}'"
+        if not exclude_fs is None:
+            cmd += " -x"
+            for f in exclude_fs:
+                cmd += f" '*/{f}'"
+        self.run(cmd)
+        return common_path / zip_name
     
     def unzip(self, zip_path: Path, overwrite_existing=True):
         cmd = f"cd {str(zip_path.parent)}; "
@@ -172,7 +209,6 @@ class PathRoot:
         # path = path.replace("\\", "/")
         fs = self.get_ls_fs(path)
         data = {}
-        data2 = {}
         _ls_l = self.run(f"ls -a -l --time-style=long-iso '{path}'")
         nsplit_ls_l = _ls_l.split("\n")
         for line in nsplit_ls_l:
@@ -210,21 +246,60 @@ class PathRoot:
                 file_info[f]["time"] = timeo
         return file_info
     
+    # def ope(self, path: Path):
+    #     from time import time
+    #     if self.remote:
+    #         t0 = time()
+    #         out = self.ssh.exec_command(f"[ -e {str(path)} ] || echo 'yes'")
+    #         # line = out[2].read().decode().strip().split(":")[-1]
+    #         t1 = time()
+    #         out2 = out[2].read()
+    #         t2 = time()
+    #         out2_decoded = out2.decode()
+    #         t3 = time()
+    #         line = out2_decoded.strip().split(":")[-1]
+    #         t4 = time()
+    #         # print(f"Time to execute remote command: {t1 - t0:.2f} seconds")
+    #         # print(f"Time to read remote command output: {t2 - t1:.2f} seconds")
+    #         # print(f"Time to decode remote command output: {t3 - t2:.2f} seconds")
+    #         # print(f"Time to parse remote command output: {t4 - t3:.2f} seconds")
+    #         return not "yes" in line
+    #     else:
+    #         return ope(path)
+
     def ope(self, path: Path):
+        """ Fast remote existence check using SFTP stat instead of shell output. """
         if self.remote:
-            out = self.ssh.exec_command(f"[ -e {str(path)} ] || echo 'yes'")
-            line = out[2].read().decode().strip().split(":")[-1]
-            return not "yes" in line
+            try:
+                self._get_sftp().stat(str(path))
+                return True
+            except OSError as exc:
+                if exc.errno == errno.ENOENT:
+                    return False
+                raise
         else:
             return ope(path)
-        
+
     def isdir(self, path: Path):
+        """ Fast remote directory check using SFTP stat instead of shell output. """
         if self.remote:
-            out = self.ssh.exec_command(f"[ -d {str(path)} ] || echo 'yes'")
-            line = out[2].read().decode().strip().split(":")[-1]
-            return "yes" in line
+            try:
+                mode = self._get_sftp().stat(str(path)).st_mode
+                return stat.S_ISDIR(mode)
+            except OSError as exc:
+                if exc.errno == errno.ENOENT:
+                    return False
+                raise
         else:
             return path.is_dir()
+        
+    # def isdir(self, path: Path):
+    #     if self.remote:
+    #         out = self.ssh.exec_command(f"[ -d {str(path)} ] || echo 'yes'")
+    #         line = out[2].read().decode().strip().split(":")[-1]
+    #         return "yes" in line
+    #     else:
+    #         return path.is_dir()
         
     def rm(self, path: Path):
         if not path.is_relative_to(self.root):
@@ -234,28 +309,34 @@ class PathRoot:
                 return shutil.rmtree(path)
             return path.unlink()
         else:
-            cmd = "rm -r " if self.isdir(path) else "rm "
-            cmd += str(path)
-            return self.run(cmd)
+            if self.isdir(path):
+                self._get_sftp().rmdir(str(path))
+            else:
+                self._get_sftp().remove(str(path))
+            return None
+            # cmd = "rm -r " if self.isdir(path) else "rm "
+            # cmd += str(path)
+            # return self.run(cmd)
         
-    def mkdir(self, path: Path):
+    def mkdir(self, path: Path, parents=True, exist_ok=True):
         if not path.is_relative_to(self.root):
             raise ValueError(f"Path {path} does not contain root {self.root}")
         if not self.remote:
             return path.mkdir(parents=True, exist_ok=True)
         else:
-            out = self.ssh.exec_command(f"mkdir -p {path}")
-            return out[2].read().decode().strip()
+            self._get_sftp().mkdir(str(path), parents=parents, exist_ok=exist_ok)
+            # out = self.ssh.exec_command(f"mkdir -p {path}")
+            # return out[2].read().decode().strip()
         
-    def pcat(self, root, fs, force=False):
-        path = root
-        for f in fs:
-            path = opj(path, f)
-            if force:
-                if not self.ope(path):
-                    print(f"making {path}")
-                    self.mkdir(path)
-        return path
+    # def pcat(self, root, fs, force=False):
+    #     path = root
+    #     for f in fs:
+    #         path = opj(path, f)
+    #         if force:
+    #             if not self.ope(path):
+    #                 print(f"making {path}")
+    #                 self.mkdir(path)
+    #     return path
     
     def listdirs(self, path):
         if self.remote:

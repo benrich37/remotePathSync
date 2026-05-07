@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from shutil import copy2 as cp
 from remotePathSync.pathroot import PathRoot
+import shlex
 
 
 class PathRootPair:
@@ -94,6 +95,11 @@ class PathRootPair:
     
     def reconnect(self, try_agent=True):
         hostname = self.remote.hostname
+        try:
+            self.remote._get_sftp().close()
+        except Exception as e:
+            print(f"Error closing SFTP connection: {e}")
+            pass
         self.remote = PathRoot(self.remote.root, hostname, try_agent)
         
 
@@ -130,18 +136,42 @@ class PathRootPair:
         self.remote.scp.get(str(remote_file), str(local_file))
     
 
-    def zip_download(self, arb_path: Path, p: bool = True, exclude_fs=["wfns"], include_fs=None):
-        self.zip_transfer(arb_path, True, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
+    def zip_download(self, arb_path: Path | list[Path], p: bool = True, exclude_fs: list[str] | None = None, include_fs: list[str] | None = None):
+        self._zip_transfer(arb_path, True, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
 
-    def zip_upload(self, arb_path: Path, p: bool = True, exclude_fs=["wfns"], include_fs=None):
-        self.zip_transfer(arb_path, False, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
+    def zip_upload(self, arb_path: Path | list[Path], p: bool = True, exclude_fs: list[str] | None = None, include_fs: list[str] | None = None):
+        self._zip_transfer(arb_path, False, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
 
-    def zip_transfer(self, arb_path: Path, download: bool, p: bool = True, exclude_fs=["wfns"], include_fs=None, overwrite_existing=True):
+    def _zip_transfer(self, arb_path: Path | list[Path], download: bool, p: bool = True, exclude_fs: list[str] | None = None, include_fs: list[str] | None = None):
+        if isinstance(arb_path, Path):
+            self.zip_transfer(arb_path, download, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
+        elif isinstance(arb_path, list):
+            self.zip_transfer_multi(arb_path, download, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
+        else:
+            raise ValueError(f"arb_path must be a Path or a list of Path, was given {type(arb_path)} ({arb_path})")
+
+    def zip_transfer(self, arb_path: Path, download: bool, p: bool = True, exclude_fs: list[str] | None = None, include_fs: list[str] | None = None, overwrite_existing=True):
         ret_step = -1 if download else 1
+        if exclude_fs is None:
+            exclude_fs = self.exclude_fs_default
         uploader, downloader = (self.local, self.remote)[::ret_step]
-        upload_dir, download_dir = self.get_local_remote_from_arb(arb_path)[::ret_step]
+        upload_dir, _ = self.get_local_remote_from_arb(arb_path)[::ret_step]
         upload_zip, download_zip = self.get_local_remote_from_arb(
                 uploader.make_zip(upload_dir, exclude_fs=exclude_fs, include_fs=include_fs)
+                )[::ret_step]
+        _ = self.download(download_zip, p=p) if download else self.upload(upload_zip, p=p)
+        uploader.rm(upload_zip)
+        downloader.unzip(download_zip, overwrite_existing=overwrite_existing)
+        downloader.rm(download_zip)
+
+    def zip_transfer_multi(self, arb_dirs: list[Path], download: bool, p: bool = True, exclude_fs: list[str] | None = None, overwrite_existing=True):
+        ret_step = -1 if download else 1
+        if exclude_fs is None:
+            exclude_fs = self.exclude_fs_default
+        uploader, downloader = (self.local, self.remote)[::ret_step]
+        upload_dirs = [self.get_local_remote_from_arb(arb_path)[::ret_step][0] for arb_path in arb_dirs]
+        upload_zip, download_zip = self.get_local_remote_from_arb(
+                uploader.make_zip_multi(upload_dirs, exclude_fs=exclude_fs)
                 )[::ret_step]
         _ = self.download(download_zip, p=p) if download else self.upload(upload_zip, p=p)
         uploader.rm(upload_zip)
@@ -179,9 +209,10 @@ class PathRootPair:
 
     def upload(self, arb_file_path: Path | str, p=True):
         local_file, remote_file = self.get_local_remote_from_arb(Path(arb_file_path))
-        msg = self.remote.mkdir(remote_file.parent)
+        self.remote.mkdir(remote_file.parent)
+        if not self.remote.isdir(remote_file.parent):
+            raise ValueError(f"Failed to create remote directory {remote_file.parent} for uploading file {remote_file}")
         if p:
-            print(msg)
             print(f"{local_file} --> {remote_file}")
         self.remote.scp.put(str(local_file), str(remote_file.parent))
 
@@ -203,9 +234,8 @@ class PathRootPair:
             self.upload_recursive(local_path / d, p=p)
 
     def write_dir_updated_timestamp(self, path):
-        with open(opj(path, "last_updated.txt"), "w") as f:
+        with open(Path(path) / "last_updated.txt", "w") as f:
             f.write(str(float(time.time())))
-        f.close()
 
     def update_dir_contents(
             self, arb_dir: Path, 
@@ -404,10 +434,14 @@ class PathRootPair:
 
 
     def submit_path_psubmit(self, path: Path, slurm_file_name: str | None = None):
-        path = str(self.get_local_remote_from_arb(path)[1])
+        # path = str(self.get_local_remote_from_arb(path)[1])
+        path = shlex.quote(str(self.get_local_remote_from_arb(path)[1]))
         if slurm_file_name is None:
             slurm_file_name = self.slurm_file_name
-        print(self.remote.run(self.submit_command_template.format(path=path, slurm_file_name=slurm_file_name)))
+        command_str = self.submit_command_template.format(path=path, slurm_file_name=slurm_file_name)
+        print(f"Submitting job with command: {command_str}")
+        print(self.remote.run(command_str))
+        # print(self.remote.run(self.submit_command_template.format(path=path, slurm_file_name=slurm_file_name)))
 
     def cancel_jobid(self, jobid):
         print(self.remote.run(f"scancel {jobid}"))
@@ -416,6 +450,7 @@ class PathRootPair:
 
 
 # TODO: Refactor this as an inheritor of PathRootPair but with remote-exclusive functions overwritten
+# WARNING: I have not needed this class in a long time so it may not be functional/compatible with the rest of this package anymore.
 class LocalPathRootPair:
     local1: PathRoot
     local2: PathRoot
@@ -476,7 +511,6 @@ class LocalPathRootPair:
     def write_dir_updated_timestamp(self, path):
         with open(opj(path, "last_updated.txt"), "w") as f:
             f.write(str(float(time.time())))
-        f.close()
 
 
     def sync_dir_contents(
