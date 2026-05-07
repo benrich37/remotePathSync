@@ -338,7 +338,10 @@ class PathRootPair:
         return slurm_jobs
 
     def get_slurm_job_history(self, days=1):
-        return self.access_job_cache(days=days)
+        cur_time = time.time()
+        if (str(days) not in self.job_cache) or ((cur_time - self.job_cache[str(days)]["time"]) > self.job_cache_refresh_time):
+            self.update_job_cache(days=days)
+        return self.job_cache[str(days)]["slurm_jobs"]
     
     def collect_slurm_jobs_history(self, days=1):
         user = self.get_user()
@@ -357,12 +360,6 @@ class PathRootPair:
             "slurm_jobs": self.collect_slurm_jobs_history(days=days),
             "time": time.time()
         }
-
-    def access_job_cache(self, days=1):
-        cur_time = time.time()
-        if (str(days) not in self.job_cache) or ((cur_time - self.job_cache[str(days)]["time"]) > self.job_cache_refresh_time):
-            self.update_job_cache(days=days)
-        return self.job_cache[str(days)]["slurm_jobs"]
     
     def get_job_state(self, path: Path, check_days=3) -> str | None:
         # """ Get the slurm STATE of a job associated with a local or remote path """
