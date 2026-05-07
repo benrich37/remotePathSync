@@ -163,12 +163,12 @@ class PathRootPair:
             raise ValueError(f"Path {arb_path} is not relative to either local root {self.local.root} or remote root {self.remote.root}")
 
     def zip_download(self, arb_path: Path | list[Path], p: bool = True, exclude_fs: list[str] | None = None, include_fs: list[str] | None = None):
-        self._zip_transfer(arb_path, True, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
+        self._zip_transfer_dispatch(arb_path, True, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
 
     def zip_upload(self, arb_path: Path | list[Path], p: bool = True, exclude_fs: list[str] | None = None, include_fs: list[str] | None = None):
-        self._zip_transfer(arb_path, False, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
+        self._zip_transfer_dispatch(arb_path, False, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
 
-    def _zip_transfer(self, arb_path: Path | list[Path], download: bool, p: bool = True, exclude_fs: list[str] | None = None, include_fs: list[str] | None = None):
+    def _zip_transfer_dispatch(self, arb_path: Path | list[Path], download: bool, p: bool = True, exclude_fs: list[str] | None = None, include_fs: list[str] | None = None):
         if isinstance(arb_path, Path):
             self.zip_transfer(arb_path, download, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
         elif isinstance(arb_path, list):
