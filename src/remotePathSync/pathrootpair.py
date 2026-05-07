@@ -381,9 +381,6 @@ class PathRootPair:
         if path in slurm_jobs_history:
             curstates = [slurm_jobs_history[path][i]["state"] for i in range(len(slurm_jobs_history[path]))]
         return curstates
-
-    def path_is_on_slurm_queue(self, path: Path, check_days=3):
-        return self.get_job_state(path, check_days=check_days) in ["PENDING", "RUNNING"]
     
     def submit_local_path(self, arb_path: Path, check_days=3, force_submit=False, update_local=True, as_zip: bool = True):
         local_path, remote_path = self.get_local_remote_from_arb(arb_path)
