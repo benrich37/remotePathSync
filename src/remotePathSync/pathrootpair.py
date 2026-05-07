@@ -338,7 +338,6 @@ class PathRootPair:
                 slurm_jobs[path] = latest_job
         return slurm_jobs
 
-
     def get_slurm_job_history(self, days=1):
         return self.access_job_cache(days=days)
     
@@ -383,20 +382,6 @@ class PathRootPair:
         if path in slurm_jobs_history:
             curstates = [slurm_jobs_history[path][i]["state"] for i in range(len(slurm_jobs_history[path]))]
         return curstates
-    
-    def path_is_currently_running(self, path: Path, check_days=3):
-        curstate = self.get_job_state(path, check_days=check_days)
-        if curstate is None:
-            return False
-        else:
-            return "RUNNING" in curstate
-
-    def path_is_currently_pending(self, path: Path, check_days=3):
-        curstate = self.get_job_state(path, check_days=check_days)
-        if curstate is None:
-            return False
-        else:
-            return "PENDING" in curstate
 
     def path_is_on_slurm_queue(self, path: Path, check_days=3):
         return self.get_job_state(path, check_days=check_days) in ["PENDING", "RUNNING"]
@@ -451,7 +436,6 @@ class PathRootPair:
         self.upload_dir(local_paths, as_zip=as_zip, update_existing=True)
         for remote_path in remote_paths:
             self.submit_path_psubmit(remote_path)
-
 
     def submit_path_psubmit(self, path: Path, slurm_file_name: str | None = None):
         path = shlex.quote(str(self.get_local_remote_from_arb(path)[1]))
