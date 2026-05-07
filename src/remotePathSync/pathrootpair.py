@@ -127,13 +127,6 @@ class PathRootPair:
         else:
             raise ValueError(f"Path {arb_path} is not relative to either local root {self.local.root} or remote root {self.remote.root}")
 
-    # def download(self, arb_path: Path | str, p=True):
-    #     local_file, remote_file = self.get_local_remote_from_arb(Path(arb_path))
-    #     self.local.mkdir(local_file.parent)
-    #     if p:
-    #         print(f"{remote_file} --> {local_file}")
-    #     self.remote.scp.get(str(remote_file), str(local_file))
-
     def zip_download(self, arb_path: Path | list[Path], p: bool = True, exclude_fs: list[str] | None = None, include_fs: list[str] | None = None):
         self._zip_transfer(arb_path, True, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
 
@@ -188,13 +181,11 @@ class PathRootPair:
                     self.download_dir(ap, p=p, exclude_fs=exclude_fs, as_zip=as_zip, include_fs=include_fs, update_existing=update_existing)
             else:
                 self.update_dir_contents(
-                    # Path(arb_path),
                     arb_path,
                     p=p,force_download=update_existing,
                     )
         else:
             self.zip_download(arb_path, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
-            # self.zip_download(Path(arb_path), p=p, exclude_fs=exclude_fs, include_fs=include_fs)
             
 
     def upload_dir(self, arb_path: Path | list[Path], p: bool = True, as_zip: bool = True,
@@ -209,12 +200,10 @@ class PathRootPair:
             else:
                 self.upload_recursive(
                     Path(arb_path),
-                    # Path(arb_path),
                     p=p,
                     )
         else:
             self.zip_upload(arb_path, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
-            # self.zip_upload(Path(arb_path), p=p, exclude_fs=exclude_fs, include_fs=include_fs)
             
     def download(self, arb_path: Path | str, p=True):
         local_file, remote_file = self.get_local_remote_from_arb(Path(arb_path))
