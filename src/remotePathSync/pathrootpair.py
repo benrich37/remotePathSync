@@ -341,7 +341,18 @@ class PathRootPair:
     def get_slurm_job_history(self, days=1):
         return self.access_job_cache(days=days)
     
-    def _get_slurm_jobs_history(self, days=1):
+    # def _get_slurm_jobs_history(self, days=1):
+    def collect_slurm_jobs_history(self, days=1):
+        user = self.get_user()
+        cmd = f'sacct -X -u {user} -S $(date -d "{days} days ago" +%D-%R) --format=jobname%-100,workdir%-200,jobid,state,elapsed'
+        out = self.remote.run(cmd).strip().split("\n")[2:]
+        slurm_jobs = {}
+        for line in out:
+            path, info = self.parse_slurm_line(line)
+            if not path in slurm_jobs:
+                slurm_jobs[path] = []
+            slurm_jobs[path].append(info)
+        return slurm_jobs
         user = self.get_user()
         cmd = f'sacct -X -u {user} -S $(date -d "{days} days ago" +%D-%R) --format=jobname%-100,workdir%-200,jobid,state,elapsed'
         out = self.remote.run(cmd).strip().split("\n")[2:]
@@ -355,7 +366,7 @@ class PathRootPair:
     
     def update_job_cache(self, days=1):
         self.job_cache[str(days)] = {
-            "slurm_jobs": self._get_slurm_jobs_history(days=days),
+            "slurm_jobs": self.collect_slurm_jobs_history(days=days),
             "time": time.time()
         }
 
