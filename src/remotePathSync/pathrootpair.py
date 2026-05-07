@@ -10,6 +10,41 @@ from remotePathSync.pathroot import PathRoot
 import shlex
 
 
+def parse_slurm_line(line):
+    l = line.split()
+    path = l[1]
+    slurm_line = {
+        "job type": l[0],
+        "jobid": l[2],
+        "state": l[3],
+        "elapsed": l[4]
+    }
+    return path, slurm_line
+
+def get_dir_updated_timestamp(local_path: Path):
+    fname = local_path / "last_updated.txt"
+    last_updated = None
+    if fname.exists():
+        timestamp = ""
+        with open(fname, "r") as f:
+            for line in f:
+                timestamp = line
+        last_updated = float(timestamp.strip())
+    return last_updated
+
+def need_check(local_path: Path, day_freq, force_check=False):
+    if force_check:
+        return True
+    else:
+        cur = time.time()
+        last = get_dir_updated_timestamp(local_path)
+        if last is None:
+            return True
+        else:
+            elap = cur - last
+            df2s = day_freq*24*60*60
+            return elap > df2s
+
 class PathRootPair:
     local: PathRoot
     local_root: Path | str | None = None
@@ -288,46 +323,10 @@ class PathRootPair:
                     force_download=force_download,
                     p=p
                     )
-
-    def get_dir_updated_timestamp(self, local_path: Path):
-        fname = local_path / "last_updated.txt"
-        last_updated = None
-        if fname.exists():
-            timestamp = ""
-            with open(fname, "r") as f:
-                for line in f:
-                    timestamp = line
-            last_updated = float(timestamp.strip())
-        return last_updated
-
-        
-    def need_check(self, local_path: Path, day_freq, force_check=False):
-        if force_check:
-            return True
-        else:
-            cur = time.time()
-            last = self.get_dir_updated_timestamp(local_path)
-            if last is None:
-                return True
-            else:
-                elap = cur - last
-                df2s = day_freq*24*60*60
-                return elap > df2s
             
     def get_user(self):
         home = self.remote.run("cd $HOME; pwd")
         return home.strip().split("/")[-1]
-    
-    def parse_slurm_line(self, line):
-        l = line.split()
-        path = l[1]
-        slurm_line = {
-            "job type": l[0],
-            "jobid": l[2],
-            "state": l[3],
-            "elapsed": l[4]
-        }
-        return path, slurm_line
     
     def get_slurm_jobs(self, days=1, exclude_cancelled=True):
         slurm_job_history = self.get_slurm_job_history(days=days)
@@ -341,24 +340,13 @@ class PathRootPair:
     def get_slurm_job_history(self, days=1):
         return self.access_job_cache(days=days)
     
-    # def _get_slurm_jobs_history(self, days=1):
     def collect_slurm_jobs_history(self, days=1):
         user = self.get_user()
         cmd = f'sacct -X -u {user} -S $(date -d "{days} days ago" +%D-%R) --format=jobname%-100,workdir%-200,jobid,state,elapsed'
         out = self.remote.run(cmd).strip().split("\n")[2:]
         slurm_jobs = {}
         for line in out:
-            path, info = self.parse_slurm_line(line)
-            if not path in slurm_jobs:
-                slurm_jobs[path] = []
-            slurm_jobs[path].append(info)
-        return slurm_jobs
-        user = self.get_user()
-        cmd = f'sacct -X -u {user} -S $(date -d "{days} days ago" +%D-%R) --format=jobname%-100,workdir%-200,jobid,state,elapsed'
-        out = self.remote.run(cmd).strip().split("\n")[2:]
-        slurm_jobs = {}
-        for line in out:
-            path, info = self.parse_slurm_line(line)
+            path, info = parse_slurm_line(line)
             if not path in slurm_jobs:
                 slurm_jobs[path] = []
             slurm_jobs[path].append(info)
@@ -656,31 +644,6 @@ class LocalPathRootPair:
             p=p,
             reverse=reverse,
         )
-
-    def get_dir_updated_timestamp(self, local1_path):
-        fname = opj(local1_path, "last_updated.txt")
-        last_updated = None
-        if ope(fname):
-            timestamp = ""
-            with open(fname, "r") as f:
-                for line in f:
-                    timestamp = line
-            last_updated = float(timestamp.strip())
-        return last_updated
-
-        
-    def need_check(self, local1_path, day_freq, force_check=False):
-        if force_check:
-            return True
-        else:
-            cur = time.time()
-            last = self.get_dir_updated_timestamp(self, local1_path)
-            if last is None:
-                return True
-            else:
-                elap = cur - last
-                df2s = day_freq*24*60*60
-                return elap > df2s
             
     
 
