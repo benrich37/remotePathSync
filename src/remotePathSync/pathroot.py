@@ -171,7 +171,7 @@ class PathRoot:
         self.run(cmd)
         return zip_path
     
-    def make_zip_multi(self, directory_paths: list[Path], exclude_fs: list[str] | None = None, zip_name = "archive.zip", pref_common_path: Path | None = None) -> Path:
+    def make_zip_multi(self, directory_paths: list[Path], exclude_fs: list[str] | None = None, include_fs: list[str] | None = None, zip_name = "archive.zip", pref_common_path: Path | None = None) -> Path:
         common_path = get_common_path_multi(directory_paths)
         if not pref_common_path is None:
             if not common_path.is_relative_to(pref_common_path):
@@ -179,9 +179,20 @@ class PathRoot:
             else:
                 common_path = pref_common_path
         rel_dirs = [d.relative_to(common_path) for d in directory_paths]
-        cmd = f"cd {common_path}; zip -r {zip_name} . -i"
+        # cmd = f"cd {common_path}; zip -r {zip_name} . -i"
+        # for reld in rel_dirs:
+        #     cmd += f" '{reld / "*"}'"
+        # if not exclude_fs is None:
+        #     cmd += " -x"
+        #     for f in exclude_fs:
+        #         cmd += f" '*/{f}'"
+        cmd = f"cd {common_path}; zip -r {zip_name}"
         for reld in rel_dirs:
-            cmd += f" '{reld / "*"}'"
+            cmd += f" {reld}"
+        if not include_fs is None:
+            cmd += " -i"
+            for f in include_fs:
+                cmd += f" '*/{f}'"
         if not exclude_fs is None:
             cmd += " -x"
             for f in exclude_fs:

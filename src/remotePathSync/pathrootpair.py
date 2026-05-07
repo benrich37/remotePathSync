@@ -164,14 +164,14 @@ class PathRootPair:
         downloader.unzip(download_zip, overwrite_existing=overwrite_existing)
         downloader.rm(download_zip)
 
-    def zip_transfer_multi(self, arb_dirs: list[Path], download: bool, p: bool = True, exclude_fs: list[str] | None = None, overwrite_existing=True):
+    def zip_transfer_multi(self, arb_dirs: list[Path], download: bool, p: bool = True, exclude_fs: list[str] | None = None, include_fs: list[str] | None = None, overwrite_existing=True):
         ret_step = -1 if download else 1
         if exclude_fs is None:
             exclude_fs = self.exclude_fs_default
         uploader, downloader = (self.local, self.remote)[::ret_step]
         upload_dirs = [self.get_local_remote_from_arb(arb_path)[::ret_step][0] for arb_path in arb_dirs]
         upload_zip, download_zip = self.get_local_remote_from_arb(
-                uploader.make_zip_multi(upload_dirs, exclude_fs=exclude_fs)
+                uploader.make_zip_multi(upload_dirs, exclude_fs=exclude_fs, include_fs=include_fs)
                 )[::ret_step]
         _ = self.download(download_zip, p=p) if download else self.upload(upload_zip, p=p)
         uploader.rm(upload_zip)
@@ -185,26 +185,38 @@ class PathRootPair:
         if exclude_fs is None:
             exclude_fs = self.exclude_fs_default
         if not as_zip:
-            self.update_dir_contents(
-                Path(arb_path),
-                p=p, force_download=update_existing,
-                )
+            if isinstance(arb_path, list):
+                for ap in arb_path:
+                    self.download_dir(ap, p=p, exclude_fs=exclude_fs, as_zip=as_zip, include_fs=include_fs, update_existing=update_existing)
+            else:
+                self.update_dir_contents(
+                    # Path(arb_path),
+                    arb_path,
+                    p=p,force_download=update_existing,
+                    )
         else:
-            self.zip_download(Path(arb_path), p=p, exclude_fs=exclude_fs, include_fs=include_fs)
+            self.zip_download(arb_path, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
+            # self.zip_download(Path(arb_path), p=p, exclude_fs=exclude_fs, include_fs=include_fs)
             
 
-    def upload_dir(self, arb_path: Path, p: bool = True, as_zip: bool = True,
+    def upload_dir(self, arb_path: Path | list[Path], p: bool = True, as_zip: bool = True,
                      exclude_fs: list[str] | None = None,
                      include_fs=None, update_existing=True):
         if exclude_fs is None:
             exclude_fs = self.exclude_fs_default
         if not as_zip:
-            self.upload_recursive(
-                Path(arb_path),
-                p=p,
-                )
+            if isinstance(arb_path, list):
+                for ap in arb_path:
+                    self.upload_dir(ap, p=p, exclude_fs=exclude_fs, as_zip=as_zip, include_fs=include_fs, update_existing=update_existing)
+            else:
+                self.upload_recursive(
+                    Path(arb_path),
+                    # Path(arb_path),
+                    p=p,
+                    )
         else:
-            self.zip_upload(Path(arb_path), p=p, exclude_fs=exclude_fs, include_fs=include_fs)
+            self.zip_upload(arb_path, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
+            # self.zip_upload(Path(arb_path), p=p, exclude_fs=exclude_fs, include_fs=include_fs)
             
 
     def upload(self, arb_file_path: Path | str, p=True):
@@ -405,11 +417,43 @@ class PathRootPair:
     def submit_local_path(self, arb_path: Path, check_days=3, force_submit=False, update_local=True, as_zip: bool = True):
         local_path, remote_path = self.get_local_remote_from_arb(arb_path)
         job_state = self.get_job_state(remote_path, check_days=check_days)
+        app = self._submit_local_path_handle_job_state(remote_path, job_state, check_days=check_days, force_submit=force_submit, update_local=update_local, as_zip=as_zip)
+        if not app:
+            return
+        # if isinstance(job_state, str):
+        #     if job_state == "RUNNING":
+        #         print(f"Job is currently running: {remote_path}")
+        #         return
+        #     if job_state == "PENDING":
+        #         print(f"Job is currently pending: {remote_path}")
+        #         if force_submit:
+        #             print("Cancelling preexisting job")
+        #             job_id = self.get_slurm_jobs(days=check_days)[remote_path]["jobid"]
+        #             self.cancel_jobid(job_id)
+        #         else:
+        #             print("Use force_submit=True to cancel preexisting job")
+        #             return
+        #     if job_state == "COMPLETED":
+        #         print(f"Job is already completed: {remote_path}")
+        #         if force_submit:
+        #             print("Resubmitting job")
+        #         else:
+        #             print("Use force_submit=True to resubmit job")
+        #             return
+        #     if job_state == "TIMEOUT":
+        #         print(f"Job has timed out: {remote_path}")
+        #         if update_local:
+        #             self.download_dir(arb_path, as_zip=as_zip)
+        self.upload_dir(local_path, as_zip=as_zip, update_existing=True)
+        self.submit_path_psubmit(remote_path)
+
+    def _submit_local_path_handle_job_state(self, remote_path, job_state, check_days=3, force_submit=False, update_local=True, as_zip: bool = True):
+        app = True
         if isinstance(job_state, str):
             if job_state == "RUNNING":
                 print(f"Job is currently running: {remote_path}")
-                return
-            if job_state == "PENDING":
+                app = False
+            elif job_state == "PENDING":
                 print(f"Job is currently pending: {remote_path}")
                 if force_submit:
                     print("Cancelling preexisting job")
@@ -417,20 +461,33 @@ class PathRootPair:
                     self.cancel_jobid(job_id)
                 else:
                     print("Use force_submit=True to cancel preexisting job")
-                    return
-            if job_state == "COMPLETED":
+                    app = False
+            elif job_state == "COMPLETED":
                 print(f"Job is already completed: {remote_path}")
                 if force_submit:
                     print("Resubmitting job")
                 else:
                     print("Use force_submit=True to resubmit job")
-                    return
-            if job_state == "TIMEOUT":
+                    app = False
+            elif job_state == "TIMEOUT":
                 print(f"Job has timed out: {remote_path}")
                 if update_local:
-                    self.download_dir(arb_path, as_zip=as_zip)
-        self.upload_dir(local_path, as_zip=as_zip, update_existing=True)
-        self.submit_path_psubmit(remote_path)
+                    self.download_dir(remote_path, as_zip=as_zip)
+        return app
+
+    def submit_local_paths(self, arb_paths: list[Path], check_days=3, force_submit=False, update_local=True, as_zip: bool = True, submit_path_psubmit: str | None = None, submit_file_names: list[str] | None = None):
+        local_paths = []
+        remote_paths = []
+        for ap in arb_paths:
+            local_path, remote_path = self.get_local_remote_from_arb(ap)
+            job_state = self.get_job_state(remote_path, check_days=check_days)
+            app = self._submit_local_path_handle_job_state(remote_path, job_state, check_days=check_days, force_submit=force_submit, update_local=update_local, as_zip=as_zip)
+            if app:
+                local_paths.append(local_path)
+                remote_paths.append(remote_path)
+        self.upload_dir(local_paths, as_zip=as_zip, update_existing=True)
+        for remote_path in remote_paths:
+            self.submit_path_psubmit(remote_path)
 
 
     def submit_path_psubmit(self, path: Path, slurm_file_name: str | None = None):
