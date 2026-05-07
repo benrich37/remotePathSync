@@ -221,12 +221,6 @@ class PathRootPair:
             print(f"{local_file} --> {remote_file}")
         self.remote.scp.put(str(local_file), str(remote_file.parent))
 
-    def uploads(self, arb_dir_path: Path, file_list: list[str], p=True):
-        local_dir, remote_dir = self.get_local_remote_from_arb(arb_dir_path)
-        if p:
-            print(f"{file_list}: {local_dir} --> {remote_dir}")
-        self.remote.scp.put(" ".join([str(local_dir / f) for f in file_list]), remote_dir)
-
     def upload_recursive(self, arb_path: Path, p=True):
         local_path, remote_path = self.get_local_remote_from_arb(arb_path)
         self.remote.mkdir(remote_path)
