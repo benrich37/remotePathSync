@@ -101,7 +101,6 @@ class PathRootPair:
             print(f"Error closing SFTP connection: {e}")
             pass
         self.remote = PathRoot(self.remote.root, hostname, try_agent)
-        
 
     def set_keepalive(self, interval: int = 60):
         """ Set keepalive interval for remote SSH connection """
@@ -128,13 +127,12 @@ class PathRootPair:
         else:
             raise ValueError(f"Path {arb_path} is not relative to either local root {self.local.root} or remote root {self.remote.root}")
 
-    def download(self, arb_path: Path | str, p=True):
-        local_file, remote_file = self.get_local_remote_from_arb(Path(arb_path))
-        self.local.mkdir(local_file.parent)
-        if p:
-            print(f"{remote_file} --> {local_file}")
-        self.remote.scp.get(str(remote_file), str(local_file))
-    
+    # def download(self, arb_path: Path | str, p=True):
+    #     local_file, remote_file = self.get_local_remote_from_arb(Path(arb_path))
+    #     self.local.mkdir(local_file.parent)
+    #     if p:
+    #         print(f"{remote_file} --> {local_file}")
+    #     self.remote.scp.get(str(remote_file), str(local_file))
 
     def zip_download(self, arb_path: Path | list[Path], p: bool = True, exclude_fs: list[str] | None = None, include_fs: list[str] | None = None):
         self._zip_transfer(arb_path, True, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
@@ -218,6 +216,12 @@ class PathRootPair:
             self.zip_upload(arb_path, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
             # self.zip_upload(Path(arb_path), p=p, exclude_fs=exclude_fs, include_fs=include_fs)
             
+    def download(self, arb_path: Path | str, p=True):
+        local_file, remote_file = self.get_local_remote_from_arb(Path(arb_path))
+        self.local.mkdir(local_file.parent)
+        if p:
+            print(f"{remote_file} --> {local_file}")
+        self.remote.scp.get(str(remote_file), str(local_file))
 
     def upload(self, arb_file_path: Path | str, p=True):
         local_file, remote_file = self.get_local_remote_from_arb(Path(arb_file_path))
@@ -420,30 +424,6 @@ class PathRootPair:
         app = self._submit_local_path_handle_job_state(remote_path, job_state, check_days=check_days, force_submit=force_submit, update_local=update_local, as_zip=as_zip)
         if not app:
             return
-        # if isinstance(job_state, str):
-        #     if job_state == "RUNNING":
-        #         print(f"Job is currently running: {remote_path}")
-        #         return
-        #     if job_state == "PENDING":
-        #         print(f"Job is currently pending: {remote_path}")
-        #         if force_submit:
-        #             print("Cancelling preexisting job")
-        #             job_id = self.get_slurm_jobs(days=check_days)[remote_path]["jobid"]
-        #             self.cancel_jobid(job_id)
-        #         else:
-        #             print("Use force_submit=True to cancel preexisting job")
-        #             return
-        #     if job_state == "COMPLETED":
-        #         print(f"Job is already completed: {remote_path}")
-        #         if force_submit:
-        #             print("Resubmitting job")
-        #         else:
-        #             print("Use force_submit=True to resubmit job")
-        #             return
-        #     if job_state == "TIMEOUT":
-        #         print(f"Job has timed out: {remote_path}")
-        #         if update_local:
-        #             self.download_dir(arb_path, as_zip=as_zip)
         self.upload_dir(local_path, as_zip=as_zip, update_existing=True)
         self.submit_path_psubmit(remote_path)
 
@@ -491,14 +471,12 @@ class PathRootPair:
 
 
     def submit_path_psubmit(self, path: Path, slurm_file_name: str | None = None):
-        # path = str(self.get_local_remote_from_arb(path)[1])
         path = shlex.quote(str(self.get_local_remote_from_arb(path)[1]))
         if slurm_file_name is None:
             slurm_file_name = self.slurm_file_name
         command_str = self.submit_command_template.format(path=path, slurm_file_name=slurm_file_name)
         print(f"Submitting job with command: {command_str}")
         print(self.remote.run(command_str))
-        # print(self.remote.run(self.submit_command_template.format(path=path, slurm_file_name=slurm_file_name)))
 
     def cancel_jobid(self, jobid):
         print(self.remote.run(f"scancel {jobid}"))
