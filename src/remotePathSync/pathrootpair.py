@@ -205,9 +205,13 @@ class PathRootPair:
         downloader.rm(download_zip)
 
 
-    def download_dir(self, arb_path: Path, p: bool = True, as_zip: bool = True,
+    def download_dir(self, arb_path: Path | list[Path], p: bool = True, as_zip: bool = True,
                      exclude_fs: list[str] | None = None,
                      include_fs=None, update_existing=True):
+        if isinstance(arb_path, list):
+            arb_path = [Path(ap) for ap in arb_path]
+        elif isinstance(arb_path, str):
+            arb_path = Path(arb_path)
         if exclude_fs is None:
             exclude_fs = self.exclude_fs_default
         if not as_zip:
@@ -343,7 +347,7 @@ class PathRootPair:
             self.update_job_cache(days=days)
         return self.job_cache[str(days)]["slurm_jobs"]
     
-    def _collect_slurm_jobs_history(self, days=1):
+    def collect_slurm_jobs_history(self, days=1):
         user = self.get_user()
         cmd = f'sacct -X -u {user} -S $(date -d "{days} days ago" +%D-%R) --format=jobname%-100,workdir%-200,jobid,state,elapsed'
         out = self.remote.run(cmd).strip().split("\n")[2:]
@@ -357,44 +361,56 @@ class PathRootPair:
     
     def update_job_cache(self, days=1):
         self.job_cache[str(days)] = {
-            "slurm_jobs": self._collect_slurm_jobs_history(days=days),
+            "slurm_jobs": self.collect_slurm_jobs_history(days=days),
             "time": time.time()
         }
-    
-    def get_job_state(self, path: Path, check_days=3) -> str | None:
-        # """ Get the slurm STATE of a job associated with a local or remote path """
-        # path = str(self.get_local_remote_from_arb(path)[1])
-        # slurm_jobs = self.get_slurm_jobs(days=check_days)
-        # curstate = None
-        # if path in slurm_jobs:
-        #     curstate = slurm_jobs[path]["state"]
-        # return curstate
-        return self.get_job_states(path, check_days=check_days)[-1]
-    
+
     def get_job_states(self, path: Path, check_days=3) -> str | None:
         """ Get the slurm STATE of a job associated with a local or remote path """
         path = str(self.get_local_remote_from_arb(path)[1])
-        slurm_jobs_history = self.get_slurm_jobs_history(days=check_days)
+        # slurm_jobs_history = self.collect_slurm_jobs_history(days=check_days)
+        slurm_jobs_history = self.get_slurm_job_history(days=check_days)
         curstates = []
         if path in slurm_jobs_history:
             curstates = [slurm_jobs_history[path][i]["state"] for i in range(len(slurm_jobs_history[path]))]
         return curstates
     
-    def submit_local_path(self, arb_path: Path, check_days=3, force_submit=False, update_local=True, as_zip: bool = True):
+    def get_job_state(self, path: Path, check_days=3) -> str | None:
+        job_states = self.get_job_states(path, check_days=check_days)
+        if len(job_states):
+            return job_states[-1]
+            # return job_states[0] # reverse chronological order to get most recent job state
+        else:
+            return None
+    
+    
+    def submit_local_path(self, arb_path: Path, check_days=3, force_submit=False, update_local=True, update_remote=True, as_zip: bool = True):
         local_path, remote_path = self.get_local_remote_from_arb(arb_path)
         job_state = self.get_job_state(remote_path, check_days=check_days)
         app = self._submit_local_path_handle_job_state(remote_path, job_state, check_days=check_days, force_submit=force_submit, update_local=update_local, as_zip=as_zip)
         if not app:
             return
-        self.upload_dir(local_path, as_zip=as_zip, update_existing=True)
+        if job_state == "TIMEOUT" and update_remote:
+            self.upload_dir(local_path, as_zip=as_zip, update_existing=True)
+        else:
+            self.upload_dir(local_path, as_zip=as_zip, update_existing=True)
         self.submit_path_psubmit(remote_path)
 
-    def _submit_local_path_handle_job_state(self, remote_path, job_state, check_days=3, force_submit=False, update_local=True, as_zip: bool = True):
+    def _submit_local_path_handle_job_state(self, remote_path, job_state: str | None, check_days=3, force_submit=False, update_local=True, as_zip: bool = True, resub_on_failed: bool = False):
         app = True
+        if job_state is None:
+            return app
         if isinstance(job_state, str):
             if job_state == "RUNNING":
                 print(f"Job is currently running: {remote_path}")
                 app = False
+            elif job_state == "FAILED":
+                print(f"Job has failed: {remote_path}")
+                if resub_on_failed:
+                    print("Resubmitting job")
+                else:
+                    print("Use resub_on_failed=True to resubmit job")
+                    app = False
             elif job_state == "PENDING":
                 print(f"Job is currently pending: {remote_path}")
                 if force_submit:
@@ -417,19 +433,20 @@ class PathRootPair:
                     self.download_dir(remote_path, as_zip=as_zip)
         return app
 
-    def submit_local_paths(self, arb_paths: list[Path], check_days=3, force_submit=False, update_local=True, as_zip: bool = True, submit_path_psubmit: str | None = None, submit_file_names: list[str] | None = None):
+    def submit_local_paths(self, arb_paths: list[Path], check_days=3, force_submit=False, update_local=True, as_zip: bool = True, submit_path_psubmit: str | None = None, submit_file_names: list[str] | None = None, resub_on_failed: bool = False):
         local_paths = []
         remote_paths = []
         for ap in arb_paths:
             local_path, remote_path = self.get_local_remote_from_arb(ap)
             job_state = self.get_job_state(remote_path, check_days=check_days)
-            app = self._submit_local_path_handle_job_state(remote_path, job_state, check_days=check_days, force_submit=force_submit, update_local=update_local, as_zip=as_zip)
+            app = self._submit_local_path_handle_job_state(remote_path, job_state, check_days=check_days, force_submit=force_submit, update_local=update_local, as_zip=as_zip, resub_on_failed=resub_on_failed)
             if app:
                 local_paths.append(local_path)
                 remote_paths.append(remote_path)
-        self.upload_dir(local_paths, as_zip=as_zip, update_existing=True)
-        for remote_path in remote_paths:
-            self.submit_path_psubmit(remote_path)
+        if len(local_paths):
+            self.upload_dir(local_paths, as_zip=as_zip, update_existing=True, include_fs=submit_file_names)
+            for remote_path in remote_paths:
+                self.submit_path_psubmit(remote_path, slurm_file_name=submit_path_psubmit)
 
     def submit_path_psubmit(self, path: Path, slurm_file_name: str | None = None):
         path = shlex.quote(str(self.get_local_remote_from_arb(path)[1]))

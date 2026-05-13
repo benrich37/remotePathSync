@@ -282,6 +282,40 @@ class PathRoot:
                 raise
         else:
             return path.is_dir()
+
+    def _remote_path_exists_or_raise(self, path: Path, exist_ok: bool):
+        if self.ope(path):
+            if not self.isdir(path):
+                raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), str(path))
+            if not exist_ok:
+                raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(path))
+            return True
+        return False
+
+    def _mkdir_remote_single(self, path: Path, exist_ok: bool):
+        if self._remote_path_exists_or_raise(path, exist_ok):
+            return None
+        self._get_sftp().mkdir(str(path))
+        return None
+
+    def _mkdir_remote_parents(self, path: Path, exist_ok: bool):
+        sftp = self._get_sftp()
+        if self._remote_path_exists_or_raise(path, exist_ok):
+            return None
+
+        current = self.root
+        relative_parts = path.relative_to(self.root).parts
+        for index, part in enumerate(relative_parts):
+            current = current / part
+            is_final = index == len(relative_parts) - 1
+            if self.ope(current):
+                if not self.isdir(current):
+                    raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), str(current))
+                if is_final and not exist_ok:
+                    raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(current))
+                continue
+            sftp.mkdir(str(current))
+        return None
         
     def rm(self, path: Path):
         if not path.is_relative_to(self.root):
@@ -301,9 +335,10 @@ class PathRoot:
         if not path.is_relative_to(self.root):
             raise ValueError(f"Path {path} does not contain root {self.root}")
         if not self.remote:
-            return path.mkdir(parents=True, exist_ok=True)
-        else:
-            self._get_sftp().mkdir(str(path), parents=parents, exist_ok=exist_ok)
+            return path.mkdir(parents=parents, exist_ok=exist_ok)
+        if not parents:
+            return self._mkdir_remote_single(path, exist_ok)
+        return self._mkdir_remote_parents(path, exist_ok)
     
     def listdirs(self, path):
         if self.remote:
