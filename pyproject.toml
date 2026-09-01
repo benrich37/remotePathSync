@@ -5,6 +5,8 @@ requires-python = ">=3.10"
 authors = [{ name = "Ben Rich", email = "benjamin.rich@colorado.edu" }]
 
 dependencies = [
-    "paramiko", # I believe this installs scp with it
+    "paramiko", 
+    "scp",
     "ipykernel",
+    "parallel-ssh",
 ]

@@ -11,6 +11,7 @@ import errno
 import stat
 from pathlib import Path
 import shutil
+from subprocess import Popen, PIPE
 
 key = Fernet.generate_key()
 fernet = Fernet(key)
@@ -30,11 +31,13 @@ def get_common_path(path1: Path, path2: Path):
         if path1.is_relative_to(path):
             return path
 
-def createSSHClient(server, port, user, password):
+def createSSHClient(server, port, user, password, look_for_keys=True, allow_agent=True):
     client = paramiko.SSHClient()
     client.load_system_host_keys()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(server, port, user, password)
+    if look_for_keys or allow_agent:
+        
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.connect(server, port, user, password, look_for_keys=look_for_keys, allow_agent=allow_agent)
     return client
 
 def get_pw_and_otp_combo():
@@ -98,14 +101,28 @@ def get_scp_and_ssh(username: str, hostname: str, try_agent=True):
 class PathRoot:
 
     remote = False
+    proc : Popen | None = None
+    proc_alias: str | None = None
     root: Path | None = None
     ssh: paramiko.SSHClient | None = None
     scp: SCPClient | None = None
     sftp: paramiko.SFTPClient | None = None
     hostname: str | None = None
+    transfer_pathroot: PathRoot | None = None
+    
 
-    def __init__(self, root: Path, hostname: str | None, try_agent=True, _ssh=None, username: str | None = None, keepalive_interval: int | None = 60, port: int = 22):
+    def __init__(
+            self, root: Path, hostname: str | None, proc_alias: str | None = None, try_agent=True, 
+            _ssh=None, username: str | None = None, keepalive_interval: int | None = 60, 
+            port: int = 22, proc_okay: bool = True, transfer_pathroot: PathRoot | None = None
+            ):
         self.root = root
+        self.proc_okay = proc_okay
+        # self.proc_alias = proc_alias
+        if not proc_alias is None:
+            self.proc_alias = proc_alias
+        else:
+            self.proc_alias = hostname
         ssh = _ssh
         scp = None
         self.sftp = None
@@ -118,13 +135,20 @@ class PathRoot:
                     ssh = createSSHClient_through_agent(hostname, username)
                 if ssh is None:
                     sdfsdfsdf = get_pw_and_otp_combo()
-                    ssh = createSSHClient(hostname, port, username, fernet.decrypt(sdfsdfsdf).decode())
+                    print(f"Connecting to {username}@{hostname}:{port} with password + OTP authentication...")
+                    ssh = createSSHClient(
+                        hostname, port, username, fernet.decrypt(sdfsdfsdf).decode(), 
+                        allow_agent=try_agent,
+                        look_for_keys=try_agent
+                        )
                     del sdfsdfsdf
             scp = SCPClient(ssh.get_transport())
             self.hostname = hostname
             self.scp = scp
             self.ssh = ssh
             self.set_keepalive(keepalive_interval)
+            if not transfer_pathroot is None:
+                self.transfer_pathroot = transfer_pathroot
         else:
             self.remote = False
 
@@ -140,23 +164,97 @@ class PathRoot:
             hostname = pathroot.hostname
         instance = cls(root, hostname, _ssh = pathroot.ssh)
         return instance
+    
+
+    # note to self for future - this will probably fail for alpine as it might automatically try to use my bajillion ssh keys and fail to connect instead of prompting for password - may need to add option to disable trying agent or limit number of keys tried from agent
+    def open_proc(self):
+        if self.remote:
+            if self.proc is None:
+                self.proc = Popen(["ssh", self.proc_alias], stdin=PIPE, stdout=PIPE, stderr=PIPE, text=True)
+                self._proc_run("pwd")
+                # self._proc_run_verbose("pwd")
+        else:
+            raise ValueError("Process opening is only available for remote PathRoot instances")
+        
+    def close_proc(self):
+        if self.remote:
+            if not self.proc is None:
+                self.proc.stdin.write("exit\n")
+                self.proc.stdin.flush()
+                self.proc.wait()
+                self.proc = None
+        else:
+            raise ValueError("Process closing is only available for remote PathRoot instances")
 
     def _get_sftp(self) -> paramiko.SFTPClient:
         if not self.remote:
             raise ValueError("SFTP is only available for remote PathRoot instances")
-        if self.sftp is None:
-            self.sftp = self.ssh.open_sftp()
-        return self.sftp
+        use = self
+        if not self.transfer_pathroot is None:
+            use = self.transfer_pathroot
+        if use.sftp is None:
+            use.sftp = use.ssh.open_sftp()
+        return use.sftp
 
-    def run(self, cmd):
+    def run(self, cmd, decode=True):
         if self.remote:
             out = self.ssh.exec_command(cmd)
-            return out[1].read().decode()
+            if decode:
+                return out[1].read().decode()
+            else:
+                return "(decoding suppressed)"
         else:
             return os.popen(cmd).read()
         
+    def _proc_run(self, cmd, sentinel="__DONE__"):
+        self.proc.stdin.write(f"{cmd}; echo {sentinel}\n")
+        self.proc.stdin.flush()
+        output = []
+        for line in self.proc.stdout:
+            if line.strip() == sentinel:
+                break
+            output.append(line)
+        return "".join(output)
+    
+    def _proc_run_verbose(self, cmd, sentinel="__DONE__"):
+        self.proc.stdin.write(f"{cmd}; echo {sentinel}\n")
+        self.proc.stdin.flush()
+        stdout = []
+        stderr = []
+        for line in self.proc.stdout:
+            if line.strip() == sentinel:
+                break
+            stdout.append(line)
+        for line in self.proc.stderr:
+            stderr.append(line)
+        print("STDOUT:")
+        print("".join(stdout))
+        print("STDERR:")
+        print("".join(stderr))
+        return "".join(stdout)
+        
+    def proc_run(self, cmd, verbose=False):
+        if self.remote:
+            if not self.proc_okay:
+                return self.run(cmd)
+            self.open_proc()
+            if verbose:
+                return self._proc_run_verbose(cmd)
+            else:
+                return self._proc_run(cmd)
+        else:
+            raise ValueError("Process running is only available for remote PathRoot instances")
+        
+    def run_return_object(self, cmd: str) -> os._wrap_close | tuple[paramiko.ChannelFile, paramiko.ChannelFile, paramiko.ChannelFile]:
+        if self.remote:
+            return self.ssh.exec_command(cmd)
+        else:
+            return os.popen(cmd)
+        
     def make_zip(self, arb_dir_path: Path, exclude_fs: list[str] | None = None, include_fs=None) -> Path:
         zip_path = arb_dir_path.parent / f"{str(arb_dir_path.name)}.zip"
+        if zip_path.exists():
+            zip_path.unlink()
         cmd = f"cd {str(arb_dir_path.parent)}; zip -r {str(arb_dir_path.name)}.zip {str(arb_dir_path.name)}"
         app_files = None
         if include_fs is not None:
@@ -168,6 +266,7 @@ class PathRoot:
         if not app_files is None:
             for f in app_files:
                 cmd += f" '*/{f}'"
+        print(cmd)
         self.run(cmd)
         return zip_path
     
@@ -179,13 +278,6 @@ class PathRoot:
             else:
                 common_path = pref_common_path
         rel_dirs = [d.relative_to(common_path) for d in directory_paths]
-        # cmd = f"cd {common_path}; zip -r {zip_name} . -i"
-        # for reld in rel_dirs:
-        #     cmd += f" '{reld / "*"}'"
-        # if not exclude_fs is None:
-        #     cmd += " -x"
-        #     for f in exclude_fs:
-        #         cmd += f" '*/{f}'"
         cmd = f"cd {common_path}; zip -r {zip_name}"
         for reld in rel_dirs:
             cmd += f" {reld}"
@@ -210,7 +302,8 @@ class PathRoot:
     # Replace ls parsing with using jc library
     def get_ls_fs(self, path: Path):
         """ Return list of all files and directories in path """
-        _fs = self.run(f"ls -a '{path}'")
+        # _fs = self.run(f"ls -a '{path}'")
+        _fs = self.proc_run(f"ls -a '{path}'")
         fs = _fs.split('\n')
         fs = [f for f in fs if not f in [".", "..", '']]
         return fs
@@ -220,7 +313,8 @@ class PathRoot:
         # path = path.replace("\\", "/")
         fs = self.get_ls_fs(path)
         data = {}
-        _ls_l = self.run(f"ls -a -l --time-style=long-iso '{path}'")
+        # _ls_l = self.run(f"ls -a -l --time-style=long-iso '{path}'")
+        _ls_l = self.proc_run(f"ls -a -l --time-style=long-iso '{path}'")
         nsplit_ls_l = _ls_l.split("\n")
         for line in nsplit_ls_l:
             contained_fs = [f for f in fs if line.endswith(f)]
@@ -241,6 +335,7 @@ class PathRoot:
     
     def get_ls_l_file_info(self, path: str):
         """ Return a dictionary of files and directories in path extracted from ls -l data """
+        path = str(path)
         path = path.replace("\\", "/")
         ls_l_data = self.get_ls_l_fs(path)
         file_info = {}
@@ -331,6 +426,17 @@ class PathRoot:
                 self._get_sftp().remove(str(path))
             return None
         
+    def mv(self, src: Path, dst: Path):
+        if not src.is_relative_to(self.root):
+            raise ValueError(f"Source path {src} does not contain root {self.root}")
+        if not dst.is_relative_to(self.root):
+            raise ValueError(f"Destination path {dst} does not contain root {self.root}")
+        if not self.remote:
+            return shutil.move(src, dst)
+        else:
+            self._get_sftp().rename(str(src), str(dst))
+            return None
+        
     def mkdir(self, path: Path, parents=True, exist_ok=True):
         if not path.is_relative_to(self.root):
             raise ValueError(f"Path {path} does not contain root {self.root}")
@@ -347,3 +453,5 @@ class PathRoot:
             return fs
         else:
             return listdir(path)
+
+    # def listdirs(self, path: Path):

@@ -50,13 +50,16 @@ class PathRootPair:
     local_root: Path | str | None = None
     local_roots: dict[str, str | Path] | None = None
     remote: PathRoot
+    remote_transfer: PathRoot
     remote_root: Path | str | None = None
     remote_roots: dict[str, str | Path] | None = None
     job_cache: dict[str, dict] = {}
     job_cache_refresh_time: float = 60
     hostname: str | None = None
+    transfer_hostname: str | None = None
     username: str | None = None
     hostnames: dict[str, str] | None = None
+    transfer_hostnames: dict[str, str] | None = None
     usernames: dict[str, str] | None = None
     # Figure out how to make this customizable
     submit_command_template: str = "cd {path}; sbatch {slurm_file_name}"
@@ -64,9 +67,15 @@ class PathRootPair:
     exclude_fs_default = ["wfns", "n_up", "n_dn", "fluidState", "out_wforce.logx", "force"]
 
 
-    def __init__(self, local: PathRoot, remote: PathRoot):
+    def __init__(self, local: PathRoot, remote: PathRoot, remote_transfer: PathRoot | None = None):
         self.local = local
         self.remote = remote
+        if remote_transfer is None:
+            self.remote_transfer = remote
+        else:
+            self.remote_transfer = remote_transfer
+        self.local_root = self.local.root
+        self.remote_root = self.remote.root
 
     @classmethod
     def from_paths(
@@ -78,12 +87,21 @@ class PathRootPair:
         remote_roots: dict[str, str | Path] | None = None,
         hostname: str | None = None, 
         hostnames: dict[str, str] | None = None,
+        transfer_hostname: str | None = None,
+        transfer_hostnames: dict[str, str] | None = None,
+        proc_alias: str | None = None,
+        proc_aliases: dict[str, str] | None = None,
         username: str | None = None,
         usernames: dict[str, str] | None = None,
         keepalive_interval: int | None = 60, 
         try_agent=True, 
+        proc_okay: bool = True,
         ):
         # TODO: Refactor to reduce redundancy with all this checking
+        if proc_alias is None and (not cls.proc_aliases is None):
+            # proc_alias = proc_aliases.get(cluster, None)
+            if (not cluster is None) and (cluster in cls.proc_aliases):
+                proc_alias = cls.proc_aliases[cluster]
         if (local_roots is None) and (not cls.local_roots is None):
             local_roots = cls.local_roots
         if local_root is None:
@@ -120,10 +138,18 @@ class PathRootPair:
                 hostname = hostnames[cluster]
             else:
                 raise ValueError("hostname must be provided either directly or through hostnames dictionary and cluster name")
+        if (transfer_hostnames is None) and (not cls.transfer_hostnames is None):
+            transfer_hostnames = cls.transfer_hostnames
+        if (transfer_hostname is None) and (not transfer_hostnames is None):
+            if (not cluster is None) and (cluster in transfer_hostnames):
+                transfer_hostname = transfer_hostnames[cluster]
         print(f"Connecting to {hostname} (user: {username}, remote root: {remote_root}, local root: {local_root})")
         local = PathRoot(local_root, None)
-        remote = PathRoot(remote_root, hostname, try_agent, username=username)
-        instance = cls(local, remote)
+        remote_transfer = None
+        if not transfer_hostname is None:
+            remote_transfer = PathRoot(remote_root, transfer_hostname, try_agent=try_agent, username=username, proc_alias=proc_alias, proc_okay=proc_okay)
+        remote = PathRoot(remote_root, hostname, try_agent=try_agent, username=username, proc_alias=proc_alias, proc_okay=proc_okay, transfer_pathroot=remote_transfer)
+        instance = cls(local, remote, remote_transfer=remote_transfer)
         if not keepalive_interval is None:
             instance.set_keepalive(keepalive_interval)
         return instance
@@ -185,6 +211,8 @@ class PathRootPair:
         upload_zip, download_zip = self.get_local_remote_from_arb(
                 uploader.make_zip(upload_dir, exclude_fs=exclude_fs, include_fs=include_fs)
                 )[::ret_step]
+        if downloader.ope(download_zip):
+            downloader.rm(download_zip)
         _ = self.download(download_zip, p=p) if download else self.upload(upload_zip, p=p)
         uploader.rm(upload_zip)
         downloader.unzip(download_zip, overwrite_existing=overwrite_existing)
@@ -199,6 +227,8 @@ class PathRootPair:
         upload_zip, download_zip = self.get_local_remote_from_arb(
                 uploader.make_zip_multi(upload_dirs, exclude_fs=exclude_fs, include_fs=include_fs)
                 )[::ret_step]
+        if downloader.ope(download_zip):
+            downloader.rm(download_zip)
         _ = self.download(download_zip, p=p) if download else self.upload(upload_zip, p=p)
         uploader.rm(upload_zip)
         downloader.unzip(download_zip, overwrite_existing=overwrite_existing)
@@ -209,6 +239,8 @@ class PathRootPair:
                      exclude_fs: list[str] | None = None,
                      include_fs=None, update_existing=True):
         if isinstance(arb_path, list):
+            if len(arb_path) == 0:
+                return
             arb_path = [Path(ap) for ap in arb_path]
         elif isinstance(arb_path, str):
             arb_path = Path(arb_path)
@@ -243,13 +275,31 @@ class PathRootPair:
                     )
         else:
             self.zip_upload(arb_path, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
+
+    def remote_ope(self, arb_path: Path | str):
+        remote_path = self.get_local_remote_from_arb(arb_path)[1]
+        return self.remote.ope(remote_path)
+
+    def local_ope(self, arb_path: Path | str):
+        local_path = self.get_local_remote_from_arb(arb_path)[0]
+        return self.local.ope(local_path)
+    
+    def and_ope(self, arb_path: Path | str):
+        local_path, remote_path = self.get_local_remote_from_arb(arb_path)
+        return self.local.ope(local_path) and self.remote.ope(remote_path)
+    
+    def or_ope(self, arb_path: Path | str):
+        local_path, remote_path = self.get_local_remote_from_arb(arb_path)
+        return self.local.ope(local_path) or self.remote.ope(remote_path)
             
     def download(self, arb_path: Path | str, p=True):
         local_file, remote_file = self.get_local_remote_from_arb(Path(arb_path))
         self.local.mkdir(local_file.parent)
         if p:
             print(f"{remote_file} --> {local_file}")
-        self.remote.scp.get(str(remote_file), str(local_file))
+        # self.remote.scp.get(str(remote_file), str(local_file))
+        use = self.remote_transfer if not self.remote_transfer is None else self.remote
+        use.scp.get(str(remote_file), str(local_file.parent))
 
     def upload(self, arb_file_path: Path | str, p=True):
         local_file, remote_file = self.get_local_remote_from_arb(Path(arb_file_path))
@@ -258,7 +308,9 @@ class PathRootPair:
             raise ValueError(f"Failed to create remote directory {remote_file.parent} for uploading file {remote_file}")
         if p:
             print(f"{local_file} --> {remote_file}")
-        self.remote.scp.put(str(local_file), str(remote_file.parent))
+        # self.remote.scp.put(str(local_file), str(remote_file.parent))
+        use = self.remote_transfer if not self.remote_transfer is None else self.remote
+        use.scp.put(str(local_file), str(remote_file.parent))
 
     def upload_recursive(self, arb_path: Path, p=True):
         local_path, remote_path = self.get_local_remote_from_arb(arb_path)
@@ -396,7 +448,7 @@ class PathRootPair:
             self.upload_dir(local_path, as_zip=as_zip, update_existing=True)
         self.submit_path_psubmit(remote_path)
 
-    def _submit_local_path_handle_job_state(self, remote_path, job_state: str | None, check_days=3, force_submit=False, update_local=True, as_zip: bool = True, resub_on_failed: bool = False):
+    def _submit_local_path_handle_job_state(self, remote_path, job_state: str | None, check_days=3, force_submit=False, update_local=True, as_zip: bool = True, resub_on_failed: bool = False, override_cancelled: bool = False):
         app = True
         if job_state is None:
             return app
@@ -411,12 +463,21 @@ class PathRootPair:
                 else:
                     print("Use resub_on_failed=True to resubmit job")
                     app = False
+            elif "CANCELLED" in job_state:
+                print(f"Job is cancelled: {remote_path}")
+                if update_local:
+                    self.download_dir(remote_path, as_zip=as_zip)
+                if (not force_submit) or (not override_cancelled):
+                    print("Use force_submit=True or override_cancelled to resubmit job")
+                    app = False
             elif job_state == "PENDING":
                 print(f"Job is currently pending: {remote_path}")
                 if force_submit:
                     print("Cancelling preexisting job")
-                    job_id = self.get_slurm_jobs(days=check_days)[remote_path]["jobid"]
-                    self.cancel_jobid(job_id)
+                    # job_id = self.get_slurm_jobs(days=check_days)[remote_path]["jobid"]
+                    job_id = self.get_slurm_jobs(days=check_days)[remote_path].get("jobid", None)
+                    if not job_id is None:
+                        self.cancel_jobid(job_id)
                 else:
                     print("Use force_submit=True to cancel preexisting job")
                     app = False
@@ -433,28 +494,62 @@ class PathRootPair:
                     self.download_dir(remote_path, as_zip=as_zip)
         return app
 
-    def submit_local_paths(self, arb_paths: list[Path], check_days=3, force_submit=False, update_local=True, as_zip: bool = True, submit_path_psubmit: str | None = None, submit_file_names: list[str] | None = None, resub_on_failed: bool = False):
+    def submit_local_paths(self, arb_paths: list[Path], check_days=3, force_submit=False, update_local=True, as_zip: bool = True, submit_path_psubmit: str | None = None, submit_file_names: list[str] | None = None, resub_on_failed: bool = False, override_cancelled: bool = False, upload_all: bool = True):
         local_paths = []
         remote_paths = []
         for ap in arb_paths:
             local_path, remote_path = self.get_local_remote_from_arb(ap)
             job_state = self.get_job_state(remote_path, check_days=check_days)
-            app = self._submit_local_path_handle_job_state(remote_path, job_state, check_days=check_days, force_submit=force_submit, update_local=update_local, as_zip=as_zip, resub_on_failed=resub_on_failed)
+            app = self._submit_local_path_handle_job_state(remote_path, job_state, check_days=check_days, force_submit=force_submit, update_local=update_local, as_zip=as_zip, resub_on_failed=resub_on_failed, override_cancelled=override_cancelled)
             if app:
                 local_paths.append(local_path)
                 remote_paths.append(remote_path)
+            elif upload_all:
+                local_paths.append(local_path)
+                # remote_paths.append(remote_path)
         if len(local_paths):
+            if len(local_paths) == 1:
+                local_paths = local_paths[0]
             self.upload_dir(local_paths, as_zip=as_zip, update_existing=True, include_fs=submit_file_names)
             for remote_path in remote_paths:
-                self.submit_path_psubmit(remote_path, slurm_file_name=submit_path_psubmit)
+                # self.submit_path_psubmit(remote_path, slurm_file_name=submit_path_psubmit, use_proc=True)
+                self._submit_path_psubmit(remote_path, slurm_file_name=submit_path_psubmit, use_proc=True)
+        self.remote.close_proc()
 
-    def submit_path_psubmit(self, path: Path, slurm_file_name: str | None = None):
+    def get_submit_path_psubmit_command(self, path: Path, slurm_file_name: str | None = None):
         path = shlex.quote(str(self.get_local_remote_from_arb(path)[1]))
         if slurm_file_name is None:
             slurm_file_name = self.slurm_file_name
         command_str = self.submit_command_template.format(path=path, slurm_file_name=slurm_file_name)
+        return command_str
+
+    def _submit_path_psubmit(self, path: Path, slurm_file_name: str | None = None, print_cmd=True, use_proc = False):
+        # path = shlex.quote(str(self.get_local_remote_from_arb(path)[1]))
+        # if slurm_file_name is None:
+        #     slurm_file_name = self.slurm_file_name
+        command_str = self.get_submit_path_psubmit_command(path, slurm_file_name=slurm_file_name)
         print(f"Submitting job with command: {command_str}")
-        print(self.remote.run(command_str))
+        if use_proc:
+            print(self.remote.proc_run(command_str))
+        else:
+            print(self.remote.run(command_str, decode=print_cmd))
+
+    def submit_path_psubmit(self, path: Path, slurm_file_name: str | None = None, print_cmd=True, use_proc = False, check_state: bool = False, abort_on_pending=True, abort_on_running=True, check_days=3):
+        app = True
+        if check_state:
+            job_state = self.get_job_state(path)
+            abort_states = []
+            if abort_on_pending:
+                abort_states.append("PENDING")
+            if abort_on_running:
+                abort_states.append("RUNNING")
+            if job_state in abort_states:
+                print(f"Job is currently {job_state}: {path}")
+                # print(f"Use abort_on_pending=False and/or abort_on_running=False to allow submission anyway")
+                app = False
+            # app = self._submit_local_path_handle_job_state(path, job_state, force_submit=False, update_local=False, as_zip=True, check_days=check_days)
+        if app:
+            self._submit_path_psubmit(path, slurm_file_name=slurm_file_name, print_cmd=print_cmd, use_proc=use_proc)
 
     def cancel_jobid(self, jobid):
         print(self.remote.run(f"scancel {jobid}"))
