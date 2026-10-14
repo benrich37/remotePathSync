@@ -77,6 +77,25 @@ def createSSHClient_through_agent(hostname: str, username: str) -> paramiko.SSHC
         # Handle any other errors (like agent connection failing)
         return None
 
+def createSSHClient_from_keyfile(
+        hostname: str, username: str, key_filename: str | Path, port: int = 22, timeout: float = 30
+        ) -> paramiko.SSHClient:
+    # Agent/key-search are disabled so stale agent keys aren't offered first, which can make
+    # the server reject the connection ("Too many authentication failures")
+    client = paramiko.SSHClient()
+    client.load_system_host_keys()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.connect(
+        hostname=hostname,
+        port=port,
+        username=username,
+        key_filename=str(Path(key_filename).expanduser()),
+        allow_agent=False,
+        look_for_keys=False,
+        timeout=timeout,
+    )
+    return client
+
 
 def get_scp_and_ssh(username: str, hostname: str, try_agent=True):
     """
@@ -114,7 +133,8 @@ class PathRoot:
     def __init__(
             self, root: Path, hostname: str | None, proc_alias: str | None = None, try_agent=True, 
             _ssh=None, username: str | None = None, keepalive_interval: int | None = 60, 
-            port: int = 22, proc_okay: bool = True, transfer_pathroot: PathRoot | None = None
+            port: int = 22, proc_okay: bool = True, transfer_pathroot: PathRoot | None = None,
+            key_filename: str | Path | None = None
             ):
         self.root = root
         self.proc_okay = proc_okay
@@ -130,7 +150,10 @@ class PathRoot:
             self.remote = True
             if username is None:
                 raise ValueError("username must be provided for remote PathRoot")
-            if _ssh is None:
+            if (_ssh is None) and (not key_filename is None):
+                print(f"Connecting to {username}@{hostname}:{port} with key file {key_filename}...")
+                ssh = createSSHClient_from_keyfile(hostname, username, key_filename, port=port)
+            elif _ssh is None:
                 if try_agent:
                     ssh = createSSHClient_through_agent(hostname, username)
                 if ssh is None:
@@ -296,13 +319,14 @@ class PathRoot:
         cmd = f"cd {str(zip_path.parent)}; "
         cmd += "unzip -o " if overwrite_existing else "unzip "
         cmd += f"{str(zip_path.name)}"
+        print(cmd)
         self.run(cmd)
 
 
     # Replace ls parsing with using jc library
     def get_ls_fs(self, path: Path):
         """ Return list of all files and directories in path """
-        # _fs = self.run(f"ls -a '{path}'")
+        # This might seem hacky but its actually like 10x faster than sftp.listdir for some reason
         _fs = self.proc_run(f"ls -a '{path}'")
         fs = _fs.split('\n')
         fs = [f for f in fs if not f in [".", "..", '']]

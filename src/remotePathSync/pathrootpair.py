@@ -7,19 +7,57 @@ import os
 from pathlib import Path
 from shutil import copy2 as cp
 from remotePathSync.pathroot import PathRoot
+import re
 import shlex
+import warnings
+
+
+# sacct fields fetched for the slurm job history, and their keys in the job records
+SACCT_FIELDS = {
+    "JobName": "job type",
+    "WorkDir": "workdir",
+    "JobID": "jobid",
+    "State": "state",
+    "Elapsed": "elapsed",
+    "Submit": "submit",
+    "Start": "start",
+    "End": "end",
+}
 
 
 def parse_slurm_line(line):
-    l = line.split()
-    path = l[1]
-    slurm_line = {
-        "job type": l[0],
-        "jobid": l[2],
-        "state": l[3],
-        "elapsed": l[4]
-    }
-    return path, slurm_line
+    """ Parse one line of `sacct --parsable2` output with the fields in SACCT_FIELDS (None if malformed) """
+    values = line.split("|")
+    if len(values) != len(SACCT_FIELDS):
+        return None
+    slurm_line = dict(zip(SACCT_FIELDS.values(), values))
+    # 'CANCELLED by <uid>' -> 'CANCELLED'
+    slurm_line["state"] = (slurm_line["state"].split() or [""])[0]
+    return slurm_line.pop("workdir"), slurm_line
+
+
+def parse_slurm_time(value):
+    """ datetime of a sacct time field, or None ('Unknown', 'None', ...) """
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def job_event_time(job: dict) -> datetime:
+    """ Time of the job's most recent state change: Submit if PENDING, Start if RUNNING, End otherwise
+    (falling back to the earlier fields when one is unknown) """
+    keys = {"PENDING": ["submit"], "RUNNING": ["start", "submit"]}.get(job["state"], ["end", "start", "submit"])
+    for key in keys:
+        t = parse_slurm_time(job.get(key))
+        if t is not None:
+            return t
+    return datetime.min
+
+
+def jobid_sort_key(jobid: str) -> tuple[int, ...]:
+    """ Numeric sort key for job ids, including array/het job ids ('123_4', '123+0') """
+    return tuple(int(n) for n in re.findall(r"\d+", jobid))
 
 def get_dir_updated_timestamp(local_path: Path):
     fname = local_path / "last_updated.txt"
@@ -53,18 +91,26 @@ class PathRootPair:
     remote_transfer: PathRoot
     remote_root: Path | str | None = None
     remote_roots: dict[str, str | Path] | None = None
-    job_cache: dict[str, dict] = {}
+    # Per instance (set in __init__): {str(days): {"slurm_jobs": ..., "time": ...}}
+    job_cache: dict[str, dict]
     job_cache_refresh_time: float = 60
+    # Per instance (set in __init__): remote calc roots submitted since the job cache was last updated
+    recent_submission: list[Path]
+    # Order each calc root's jobs by their most recent state change instead of sacct's print order
+    smart_job_sort: bool = True
     hostname: str | None = None
     transfer_hostname: str | None = None
     username: str | None = None
     hostnames: dict[str, str] | None = None
     transfer_hostnames: dict[str, str] | None = None
     usernames: dict[str, str] | None = None
+    # hostname -> private key file; hostnames listed here connect with that key instead of agent/password
+    key_filenames: dict[str, str | Path] | None = None
     # Figure out how to make this customizable
     submit_command_template: str = "cd {path}; sbatch {slurm_file_name}"
     slurm_file_name: str = "psubmit.sh"
     exclude_fs_default = ["wfns", "n_up", "n_dn", "fluidState", "out_wforce.logx", "force"]
+    cluster: str | None = None
 
 
     def __init__(self, local: PathRoot, remote: PathRoot, remote_transfer: PathRoot | None = None):
@@ -76,6 +122,13 @@ class PathRootPair:
             self.remote_transfer = remote_transfer
         self.local_root = self.local.root
         self.remote_root = self.remote.root
+        self.job_cache = {}
+        self.recent_submission = []
+        self.__post_init__()
+
+    def __post_init__(self):
+        # Add custom initialization stuff here
+        return None
 
     @classmethod
     def from_paths(
@@ -93,7 +146,8 @@ class PathRootPair:
         proc_aliases: dict[str, str] | None = None,
         username: str | None = None,
         usernames: dict[str, str] | None = None,
-        keepalive_interval: int | None = 60, 
+        key_filenames: dict[str, str | Path] | None = None,
+        keepalive_interval: int | None = 60,
         try_agent=True, 
         proc_okay: bool = True,
         ):
@@ -143,15 +197,21 @@ class PathRootPair:
         if (transfer_hostname is None) and (not transfer_hostnames is None):
             if (not cluster is None) and (cluster in transfer_hostnames):
                 transfer_hostname = transfer_hostnames[cluster]
+        if (key_filenames is None) and (not cls.key_filenames is None):
+            key_filenames = cls.key_filenames
+        if key_filenames is None:
+            key_filenames = {}
         print(f"Connecting to {hostname} (user: {username}, remote root: {remote_root}, local root: {local_root})")
         local = PathRoot(local_root, None)
         remote_transfer = None
         if not transfer_hostname is None:
-            remote_transfer = PathRoot(remote_root, transfer_hostname, try_agent=try_agent, username=username, proc_alias=proc_alias, proc_okay=proc_okay)
-        remote = PathRoot(remote_root, hostname, try_agent=try_agent, username=username, proc_alias=proc_alias, proc_okay=proc_okay, transfer_pathroot=remote_transfer)
+            remote_transfer = PathRoot(remote_root, transfer_hostname, try_agent=try_agent, username=username, proc_alias=proc_alias, proc_okay=proc_okay, key_filename=key_filenames.get(transfer_hostname))
+        remote = PathRoot(remote_root, hostname, try_agent=try_agent, username=username, proc_alias=proc_alias, proc_okay=proc_okay, transfer_pathroot=remote_transfer, key_filename=key_filenames.get(hostname))
         instance = cls(local, remote, remote_transfer=remote_transfer)
         if not keepalive_interval is None:
             instance.set_keepalive(keepalive_interval)
+        instance.cluster = cluster
+        instance.__post_init__()
         return instance
     
     def reconnect(self, try_agent=True):
@@ -191,18 +251,18 @@ class PathRootPair:
     def zip_download(self, arb_path: Path | list[Path], p: bool = True, exclude_fs: list[str] | None = None, include_fs: list[str] | None = None):
         self._zip_transfer_dispatch(arb_path, True, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
 
-    def zip_upload(self, arb_path: Path | list[Path], p: bool = True, exclude_fs: list[str] | None = None, include_fs: list[str] | None = None):
-        self._zip_transfer_dispatch(arb_path, False, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
+    def zip_upload(self, arb_path: Path | list[Path], p: bool = True, exclude_fs: list[str] | None = None, include_fs: list[str] | None = None, add_group_access: bool = True):
+        self._zip_transfer_dispatch(arb_path, False, p=p, exclude_fs=exclude_fs, include_fs=include_fs, add_group_access=add_group_access)
 
-    def _zip_transfer_dispatch(self, arb_path: Path | list[Path], download: bool, p: bool = True, exclude_fs: list[str] | None = None, include_fs: list[str] | None = None):
+    def _zip_transfer_dispatch(self, arb_path: Path | list[Path], download: bool, p: bool = True, exclude_fs: list[str] | None = None, include_fs: list[str] | None = None, add_group_access: bool = False):
         if isinstance(arb_path, Path):
-            self.zip_transfer(arb_path, download, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
+            self.zip_transfer(arb_path, download, p=p, exclude_fs=exclude_fs, include_fs=include_fs, add_group_access=add_group_access)
         elif isinstance(arb_path, list):
-            self.zip_transfer_multi(arb_path, download, p=p, exclude_fs=exclude_fs, include_fs=include_fs)
+            self.zip_transfer_multi(arb_path, download, p=p, exclude_fs=exclude_fs, include_fs=include_fs, add_group_access=add_group_access)
         else:
             raise ValueError(f"arb_path must be a Path or a list of Path, was given {type(arb_path)} ({arb_path})")
 
-    def zip_transfer(self, arb_path: Path, download: bool, p: bool = True, exclude_fs: list[str] | None = None, include_fs: list[str] | None = None, overwrite_existing=True):
+    def zip_transfer(self, arb_path: Path, download: bool, p: bool = True, exclude_fs: list[str] | None = None, include_fs: list[str] | None = None, overwrite_existing=True, add_group_access: bool = False):
         ret_step = -1 if download else 1
         if exclude_fs is None:
             exclude_fs = self.exclude_fs_default
@@ -217,8 +277,10 @@ class PathRootPair:
         uploader.rm(upload_zip)
         downloader.unzip(download_zip, overwrite_existing=overwrite_existing)
         downloader.rm(download_zip)
+        if add_group_access:
+            downloader.run(f"chmod -R g+rwx {shlex.quote(str(download_zip.parent))}")
 
-    def zip_transfer_multi(self, arb_dirs: list[Path], download: bool, p: bool = True, exclude_fs: list[str] | None = None, include_fs: list[str] | None = None, overwrite_existing=True):
+    def zip_transfer_multi(self, arb_dirs: list[Path], download: bool, p: bool = True, exclude_fs: list[str] | None = None, include_fs: list[str] | None = None, overwrite_existing=True, add_group_access: bool = False):
         ret_step = -1 if download else 1
         if exclude_fs is None:
             exclude_fs = self.exclude_fs_default
@@ -233,6 +295,8 @@ class PathRootPair:
         uploader.rm(upload_zip)
         downloader.unzip(download_zip, overwrite_existing=overwrite_existing)
         downloader.rm(download_zip)
+        if add_group_access:
+            downloader.run(f"chmod -R g+rwx {shlex.quote(str(download_zip.parent))}")
 
 
     def download_dir(self, arb_path: Path | list[Path], p: bool = True, as_zip: bool = True,
@@ -307,7 +371,8 @@ class PathRootPair:
         if not self.remote.isdir(remote_file.parent):
             raise ValueError(f"Failed to create remote directory {remote_file.parent} for uploading file {remote_file}")
         if p:
-            print(f"{local_file} --> {remote_file}")
+            file_size = os.path.getsize(local_file)
+            print(f"{local_file} ({file_size}) --> {remote_file}")
         # self.remote.scp.put(str(local_file), str(remote_file.parent))
         use = self.remote_transfer if not self.remote_transfer is None else self.remote
         use.scp.put(str(local_file), str(remote_file.parent))
@@ -400,22 +465,53 @@ class PathRootPair:
         return self.job_cache[str(days)]["slurm_jobs"]
     
     def collect_slurm_jobs_history(self, days=1):
+        """ {remote calc root: [job records, oldest -> most recent]} from sacct """
         user = self.get_user()
-        cmd = f'sacct -X -u {user} -S $(date -d "{days} days ago" +%D-%R) --format=jobname%-100,workdir%-200,jobid,state,elapsed'
-        out = self.remote.run(cmd).strip().split("\n")[2:]
+        fields = ",".join(SACCT_FIELDS)
+        cmd = f'sacct -X -u {user} -S $(date -d "{days} days ago" +%D-%R) --parsable2 --noheader --format={fields}'
+        out = self.remote.run(cmd).strip().split("\n")
         slurm_jobs = {}
         for line in out:
-            path, info = parse_slurm_line(line)
+            parsed = parse_slurm_line(line)
+            if parsed is None:
+                continue
+            path, info = parsed
             if not path in slurm_jobs:
                 slurm_jobs[path] = []
             slurm_jobs[path].append(info)
+        if self.smart_job_sort:
+            slurm_jobs = {path: self.sort_job_records(path, jobs) for path, jobs in slurm_jobs.items()}
         return slurm_jobs
+
+    def sort_job_records(self, path: str, jobs: list[dict]) -> list[dict]:
+        """ Order a calc root's jobs by their most recent state change (see job_event_time), oldest first.
+        A RUNNING job is always treated as the most recent one (moved to the end); if it was not, and a
+        job sorted after it is PENDING, a warning is raised (probably a duplicate submission). """
+        jobs = sorted(jobs, key=lambda job: (job_event_time(job), jobid_sort_key(job["jobid"])))
+        running = [i for i, job in enumerate(jobs) if job["state"] == "RUNNING"]
+        if running and running[-1] != len(jobs) - 1:
+            i = running[-1]
+            pending = [job["jobid"] for job in jobs[i + 1:] if job["state"] == "PENDING"]
+            if pending:
+                warnings.warn(
+                    f"{path}: job {jobs[i]['jobid']} is RUNNING but more recent job(s) {', '.join(pending)} "
+                    "are PENDING in the same directory (duplicate submission?)"
+                )
+            jobs.append(jobs.pop(i))
+        return jobs
     
     def update_job_cache(self, days=1):
         self.job_cache[str(days)] = {
             "slurm_jobs": self.collect_slurm_jobs_history(days=days),
             "time": time.time()
         }
+        # sacct now knows about every submission made so far
+        self.recent_submission.clear()
+
+    def is_recently_submitted(self, arb_path: Path | str) -> bool:
+        """ Whether arb_path's calc root was submitted since the job cache was last updated
+        (so its job may be missing from the cached slurm job history) """
+        return Path(self.get_local_remote_from_arb(arb_path)[1]) in self.recent_submission
 
     def get_job_states(self, path: Path, check_days=3) -> str | None:
         """ Get the slurm STATE of a job associated with a local or remote path """
@@ -450,6 +546,10 @@ class PathRootPair:
 
     def _submit_local_path_handle_job_state(self, remote_path, job_state: str | None, check_days=3, force_submit=False, update_local=True, as_zip: bool = True, resub_on_failed: bool = False, override_cancelled: bool = False):
         app = True
+        if self.is_recently_submitted(remote_path):
+            print(f"Job was submitted since the slurm job history was last updated: {remote_path}")
+            print("Call update_job_cache to check its state before submitting again")
+            return False
         if job_state is None:
             return app
         if isinstance(job_state, str):
@@ -475,7 +575,7 @@ class PathRootPair:
                 if force_submit:
                     print("Cancelling preexisting job")
                     # job_id = self.get_slurm_jobs(days=check_days)[remote_path]["jobid"]
-                    job_id = self.get_slurm_jobs(days=check_days)[remote_path].get("jobid", None)
+                    job_id = self.get_slurm_jobs(days=check_days).get(str(remote_path), {}).get("jobid", None)
                     if not job_id is None:
                         self.cancel_jobid(job_id)
                 else:
@@ -499,6 +599,9 @@ class PathRootPair:
         remote_paths = []
         for ap in arb_paths:
             local_path, remote_path = self.get_local_remote_from_arb(ap)
+            if remote_path in remote_paths:
+                print(f"Skipping duplicate path in submission list: {remote_path}")
+                continue
             job_state = self.get_job_state(remote_path, check_days=check_days)
             app = self._submit_local_path_handle_job_state(remote_path, job_state, check_days=check_days, force_submit=force_submit, update_local=update_local, as_zip=as_zip, resub_on_failed=resub_on_failed, override_cancelled=override_cancelled)
             if app:
@@ -529,6 +632,8 @@ class PathRootPair:
         #     slurm_file_name = self.slurm_file_name
         command_str = self.get_submit_path_psubmit_command(path, slurm_file_name=slurm_file_name)
         print(f"Submitting job with command: {command_str}")
+        # Before running: also guards a submission that raised after reaching sbatch
+        self.recent_submission.append(Path(self.get_local_remote_from_arb(path)[1]))
         if use_proc:
             print(self.remote.proc_run(command_str))
         else:
@@ -537,7 +642,11 @@ class PathRootPair:
     def submit_path_psubmit(self, path: Path, slurm_file_name: str | None = None, print_cmd=True, use_proc = False, check_state: bool = False, abort_on_pending=True, abort_on_running=True, check_days=3):
         app = True
         if check_state:
-            job_state = self.get_job_state(path)
+            if (abort_on_pending or abort_on_running) and self.is_recently_submitted(path):
+                print(f"Job was submitted since the slurm job history was last updated: {path}")
+                print("Call update_job_cache to check its state before submitting again")
+                return
+            job_state = self.get_job_state(path, check_days=check_days)
             abort_states = []
             if abort_on_pending:
                 abort_states.append("PENDING")
