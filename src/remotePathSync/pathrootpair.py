@@ -103,6 +103,8 @@ class PathRootPair:
     username: str | None = None
     hostnames: dict[str, str] | None = None
     transfer_hostnames: dict[str, str] | None = None
+    # cluster -> ~/.ssh/config alias used by PathRoot.proc_run (defaults to the hostname)
+    proc_aliases: dict[str, str] | None = None
     usernames: dict[str, str] | None = None
     # hostname -> private key file; hostnames listed here connect with that key instead of agent/password
     key_filenames: dict[str, str | Path] | None = None

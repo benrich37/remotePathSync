@@ -26,7 +26,7 @@ def get_common_path_multi(directory_paths: list[Path]):
 
 
 def get_common_path(path1: Path, path2: Path):
-    other = path1.with_segments(path2)
+    other = type(path1)(path2)
     for step, path in enumerate([other] + list(other.parents)):
         if path1.is_relative_to(path):
             return path
@@ -300,6 +300,9 @@ class PathRoot:
                 raise ValueError(f"Provided pref_common_path ({pref_common_path}) is not relative to minimal common path of provided directories ({common_path})")
             else:
                 common_path = pref_common_path
+        if common_path in directory_paths:
+            # Zipping "." gives entries with no "<dir>/" prefix, which the '*/<f>' patterns below never match
+            common_path = common_path.parent
         rel_dirs = [d.relative_to(common_path) for d in directory_paths]
         cmd = f"cd {common_path}; zip -r {zip_name}"
         for reld in rel_dirs:
